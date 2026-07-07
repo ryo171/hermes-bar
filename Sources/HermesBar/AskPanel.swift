@@ -2,7 +2,6 @@ import AppKit
 import SwiftUI
 import Combine
 
-// Reasoning-effort levels exposed in the panel's bottom bar.
 enum ReasoningLevel: String, CaseIterable {
     case minimal, low, medium, high
     func label(ar: Bool) -> String {
@@ -53,9 +52,10 @@ final class AskViewModel: ObservableObject {
     @Published var response: String = ""
     @Published var errorText: String = ""
     @Published var isLoading: Bool = false
-    @Published var withScreenshot: Bool = true
     @Published var pinned: Bool = false
     @Published var reasoning: String = UserDefaults.standard.string(forKey: "hb.reasoning") ?? "low"
+    @Published var withScreenshot: Bool =
+        (UserDefaults.standard.object(forKey: "hb.withshot") as? Bool) ?? true
 
     @Published var theme: Theme = Settings.shared.theme
     @Published var isArabic: Bool = Settings.shared.language == .arabic
@@ -67,17 +67,21 @@ final class AskViewModel: ObservableObject {
         UserDefaults.standard.set(v, forKey: "hb.reasoning")
     }
 
+    func setWithScreenshot(_ on: Bool) {
+        withScreenshot = on
+        UserDefaults.standard.set(on, forKey: "hb.withshot")
+    }
+
     func refreshFromSettings() {
         theme = Settings.shared.theme
         isArabic = Settings.shared.language == .arabic
     }
 
-    func reset(withScreenshot: Bool) {
+    func reset() {
         input = ""
         response = ""
         errorText = ""
         isLoading = false
-        self.withScreenshot = withScreenshot
         refreshFromSettings()
     }
 
@@ -113,6 +117,8 @@ final class AskPanelController: NSObject, NSWindowDelegate {
 
     var isVisible: Bool { panel?.isVisible ?? false }
 
+    func setScreenshot(_ on: Bool) { viewModel.setWithScreenshot(on) }
+
     private func savedSize() -> NSSize {
         let d = UserDefaults.standard
         let w = d.double(forKey: "hb.win.w")
@@ -121,8 +127,8 @@ final class AskPanelController: NSObject, NSWindowDelegate {
         return defaultSize
     }
 
-    func present(withScreenshot: Bool) {
-        viewModel.reset(withScreenshot: withScreenshot)
+    func present() {
+        viewModel.reset()
         viewModel.onClose = { [weak self] in self?.dismiss() }
 
         if panel == nil {
@@ -219,6 +225,14 @@ struct AskView: View {
                 .focused($inputFocused)
                 .onSubmit { vm.send() }
 
+            Button(action: { vm.setWithScreenshot(!vm.withScreenshot) }) {
+                Image(systemName: vm.withScreenshot ? "eye.fill" : "eye.slash")
+                    .font(.system(size: 15))
+                    .foregroundColor(vm.withScreenshot ? t.accent : t.textSecondary)
+            }
+            .buttonStyle(.plain)
+            .help(vm.isArabic ? "رؤية الشاشة (أسرع لو مطفّية)" : "See screen (faster when off)")
+
             Button(action: { vm.pinned.toggle() }) {
                 Image(systemName: vm.pinned ? "pin.fill" : "pin")
                     .font(.system(size: 15))
@@ -226,12 +240,6 @@ struct AskView: View {
             }
             .buttonStyle(.plain)
             .help(vm.isArabic ? "تثبيت النافذة" : "Pin window")
-
-            if vm.withScreenshot {
-                Image(systemName: "photo")
-                    .foregroundColor(t.textSecondary)
-                    .help(vm.isArabic ? "لقطة شاشتك مرفقة مع السؤال" : "Your screenshot is attached")
-            }
 
             Button(action: { vm.send() }) {
                 Image(systemName: "arrow.up.circle.fill")

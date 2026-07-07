@@ -7,10 +7,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindow: SettingsWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        setupMainMenu()
         setupStatusItem()
         registerHotKey()
 
-        // React to settings changes (hotkey re-record, theme, language).
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(settingsChanged),
@@ -19,7 +19,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
     }
 
-    // MARK: - Menu bar item
+    private func setupMainMenu() {
+        let mainMenu = NSMenu()
+
+        let appItem = NSMenuItem()
+        mainMenu.addItem(appItem)
+        let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "Quit Hermes Bar",
+                        action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appItem.submenu = appMenu
+
+        let editItem = NSMenuItem()
+        mainMenu.addItem(editItem)
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        editMenu.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "Select All",
+                         action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editItem.submenu = editMenu
+
+        NSApp.mainMenu = mainMenu
+    }
 
     private func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -32,75 +56,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func rebuildMenu() {
-        let s = Settings.shared
-        let ar = s.language == .arabic
+        let ar = Settings.shared.language == .arabic
         let menu = NSMenu()
 
-        let askScreen = NSMenuItem(
-            title: ar ? "اسأل عن شاشتي" : "Ask about my screen",
-            action: #selector(askAboutScreen), keyEquivalent: ""
-        )
+        let askScreen = NSMenuItem(title: ar ? "اسأل عن شاشتي" : "Ask about my screen",
+                                   action: #selector(askAboutScreen), keyEquivalent: "")
         askScreen.target = self
         menu.addItem(askScreen)
 
-        let askText = NSMenuItem(
-            title: ar ? "اسأل (نص فقط)" : "Ask (text only)",
-            action: #selector(askTextOnly), keyEquivalent: ""
-        )
+        let askText = NSMenuItem(title: ar ? "اسأل (نص فقط)" : "Ask (text only)",
+                                 action: #selector(askTextOnly), keyEquivalent: "")
         askText.target = self
         menu.addItem(askText)
 
         menu.addItem(.separator())
 
-        let settings = NSMenuItem(
-            title: ar ? "الإعدادات…" : "Settings…",
-            action: #selector(openSettings), keyEquivalent: ","
-        )
+        let settings = NSMenuItem(title: ar ? "الإعدادات…" : "Settings…",
+                                  action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
         menu.addItem(settings)
 
-        let check = NSMenuItem(
-            title: ar ? "فحص الاتصال" : "Check connection",
-            action: #selector(checkConnection), keyEquivalent: ""
-        )
+        let check = NSMenuItem(title: ar ? "فحص الاتصال" : "Check connection",
+                               action: #selector(checkConnection), keyEquivalent: "")
         check.target = self
         menu.addItem(check)
 
         menu.addItem(.separator())
 
-        let quit = NSMenuItem(
-            title: ar ? "إنهاء Hermes Bar" : "Quit Hermes Bar",
-            action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"
-        )
+        let quit = NSMenuItem(title: ar ? "إنهاء Hermes Bar" : "Quit Hermes Bar",
+                              action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.addItem(quit)
 
         statusItem.menu = menu
     }
 
-    // MARK: - Hotkey
-
     private func registerHotKey() {
         let combo = Settings.shared.hotKey
         hotKey.register(keyCode: combo.keyCode, modifiers: combo.carbonModifiers) { [weak self] in
-            self?.togglePanel(withScreenshot: true)
+            self?.togglePanel()
         }
     }
 
     @objc private func settingsChanged() {
         rebuildMenu()
-        registerHotKey()          // re-register in case the combo changed
+        registerHotKey()
         panelController?.applyTheme()
     }
 
-    // MARK: - Actions
-
-    @objc private func askAboutScreen() { showPanel(withScreenshot: true) }
-    @objc private func askTextOnly()    { showPanel(withScreenshot: false) }
+    @objc private func askAboutScreen() { showPanel(screenshot: true) }
+    @objc private func askTextOnly()    { showPanel(screenshot: false) }
 
     @objc private func openSettings() {
-        if settingsWindow == nil {
-            settingsWindow = SettingsWindowController()
-        }
+        if settingsWindow == nil { settingsWindow = SettingsWindowController() }
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.showWindow(nil)
         settingsWindow?.window?.makeKeyAndOrderFront(nil)
@@ -126,20 +133,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // MARK: - Panel
-
-    private func showPanel(withScreenshot: Bool) {
-        if panelController == nil {
-            panelController = AskPanelController()
-        }
-        panelController?.present(withScreenshot: withScreenshot)
+    private func ensureController() -> AskPanelController {
+        if panelController == nil { panelController = AskPanelController() }
+        return panelController!
     }
 
-    private func togglePanel(withScreenshot: Bool) {
-        if let pc = panelController, pc.isVisible {
-            pc.dismiss()
-        } else {
-            showPanel(withScreenshot: withScreenshot)
-        }
+    private func showPanel(screenshot: Bool) {
+        let c = ensureController()
+        c.setScreenshot(screenshot)
+        c.present()
+    }
+
+    private func togglePanel() {
+        let c = ensureController()
+        if c.isVisible { c.dismiss() } else { c.present() }
     }
 }
