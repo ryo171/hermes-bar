@@ -1,7 +1,7 @@
 import SwiftUI
 
-// Six themes mirroring Hermes' own built-in dashboard themes, so Hermes Bar
-// feels like part of the same family. Selected in Settings.
+// Themes mirroring Hermes' own built-in dashboard themes, plus a translucent
+// "Glass" theme (macOS vibrancy). Selected in Settings.
 struct Theme: Identifiable {
     var id: String { name }
     let name: String          // stable id
@@ -12,6 +12,7 @@ struct Theme: Identifiable {
     let accent: Color         // buttons, focus ring
     let textPrimary: Color
     let textSecondary: Color
+    var isGlass: Bool = false  // when true, use a frosted NSVisualEffectView background
 
     static func hex(_ v: UInt32) -> Color {
         Color(
@@ -25,6 +26,9 @@ struct Theme: Identifiable {
         Theme(name: "hermes-teal", label: "Hermes Teal",
               background: hex(0x0B1E1E), surface: hex(0x12312F), accent: hex(0x4FD6C2),
               textPrimary: hex(0xF3EFE0), textSecondary: hex(0x9FBDB6)),
+        Theme(name: "glass", label: "Glass · زجاجي",
+              background: hex(0x1A1A1F), surface: Color.white.opacity(0.10), accent: hex(0x6AA9FF),
+              textPrimary: Color.white, textSecondary: Color.white.opacity(0.65), isGlass: true),
         Theme(name: "midnight", label: "Midnight",
               background: hex(0x0F1226), surface: hex(0x1B1F3B), accent: hex(0x7C8CFF),
               textPrimary: hex(0xE6E8FF), textSecondary: hex(0x9AA0CF)),

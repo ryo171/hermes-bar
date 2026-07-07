@@ -2,15 +2,28 @@ import AppKit
 import SwiftUI
 import Combine
 
-// Panel width. Bumped wider so long RTL replies aren't cramped.
-let kPanelWidth: CGFloat = 680
+// MARK: - Frosted-glass background (macOS vibrancy)
 
-// MARK: - Borderless floating panel (the Cowork-style window)
+struct VisualEffectBackground: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let v = NSVisualEffectView()
+        v.material = .hudWindow
+        v.blendingMode = .behindWindow
+        v.state = .active
+        v.wantsLayer = true
+        v.layer?.cornerRadius = 18
+        v.layer?.masksToBounds = true
+        return v
+    }
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
+}
+
+// MARK: - Resizable borderless floating panel (the Cowork-style window)
 
 final class FloatingPanel: NSPanel {
     init(contentRect: NSRect) {
         super.init(contentRect: contentRect,
-                   styleMask: [.borderless, .nonactivatingPanel],
+                   styleMask: [.borderless, .resizable, .nonactivatingPanel],
                    backing: .buffered, defer: false)
         isFloatingPanel = true
         level = .floating
@@ -18,6 +31,7 @@ final class FloatingPanel: NSPanel {
         backgroundColor = .clear
         isOpaque = false
         hasShadow = true
+        minSize = NSSize(width: 460, height: 220)
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
     }
 
@@ -33,7 +47,7 @@ final class AskViewModel: ObservableObject {
     @Published var errorText: String = ""
     @Published var isLoading: Bool = false
     @Published var withScreenshot: Bool = true
-    @Published var pinned: Bool = false     // when true, window stays until hotkey pressed again
+    @Published var pinned: Bool = false
 
     @Published var theme: Theme = Settings.shared.theme
     @Published var isArabic: Bool = Settings.shared.language == .arabic
@@ -51,7 +65,6 @@ final class AskViewModel: ObservableObject {
         errorText = ""
         isLoading = false
         self.withScreenshot = withScreenshot
-        // note: `pinned` is intentionally NOT reset, so the preference sticks.
         refreshFromSettings()
     }
 
@@ -82,65 +95,57 @@ final class AskViewModel: ObservableObject {
 final class AskPanelController: NSObject, NSWindowDelegate {
     private var panel: FloatingPanel?
     private let viewModel = AskViewModel()
-    private var cancellables = Set<AnyCancellable>()
-    private var anchorTopY: CGFloat = 0
+    private let defaultSize = NSSize(width: 720, height: 460)
 
     var isVisible: Bool { panel?.isVisible ?? false }
+
+    private func savedSize() -> NSSize {
+        let d = UserDefaults.standard
+        let w = d.double(forKey: "hb.win.w")
+        let h = d.double(forKey: "hb.win.h")
+        if w >= 460, h >= 220 { return NSSize(width: w, height: h) }
+        return defaultSize
+    }
 
     func present(withScreenshot: Bool) {
         viewModel.reset(withScreenshot: withScreenshot)
         viewModel.onClose = { [weak self] in self?.dismiss() }
 
         if panel == nil {
-            let rect = NSRect(x: 0, y: 0, width: kPanelWidth, height: 68)
+            let rect = NSRect(origin: .zero, size: savedSize())
             let p = FloatingPanel(contentRect: rect)
-            p.contentViewController = NSHostingController(rootView: AskView(vm: viewModel))
+            p.contentView = NSHostingView(rootView: AskView(vm: viewModel))
             p.delegate = self
             panel = p
-
-            viewModel.objectWillChange
-                .sink { [weak self] in
-                    DispatchQueue.main.async { self?.repositionKeepingTop() }
-                }
-                .store(in: &cancellables)
         }
-
-        computeAnchor()
-        repositionKeepingTop()
+        position(panel!)
         NSApp.activate(ignoringOtherApps: true)
         panel!.makeKeyAndOrderFront(nil)
     }
 
-    func dismiss() {
-        panel?.orderOut(nil)
-    }
+    func dismiss() { panel?.orderOut(nil) }
 
-    func applyTheme() {
-        viewModel.refreshFromSettings()
-    }
+    func applyTheme() { viewModel.refreshFromSettings() }
 
-    // Click-away to close: when the panel loses focus and isn't pinned, hide it.
     func windowDidResignKey(_ notification: Notification) {
         if !viewModel.pinned {
             DispatchQueue.main.async { [weak self] in self?.dismiss() }
         }
     }
 
-    private func computeAnchor() {
-        let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }
-            ?? NSScreen.main
-        guard let visible = screen?.visibleFrame else { return }
-        anchorTopY = visible.maxY - visible.height * 0.16
+    func windowDidResize(_ notification: Notification) {
+        guard let size = panel?.frame.size else { return }
+        UserDefaults.standard.set(Double(size.width), forKey: "hb.win.w")
+        UserDefaults.standard.set(Double(size.height), forKey: "hb.win.h")
     }
 
-    private func repositionKeepingTop() {
-        guard let panel = panel else { return }
+    private func position(_ panel: NSPanel) {
         let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }
             ?? NSScreen.main
         guard let visible = screen?.visibleFrame else { return }
         let size = panel.frame.size
         let x = visible.midX - size.width / 2
-        let y = anchorTopY - size.height
+        let y = visible.maxY - size.height - visible.height * 0.14
         panel.setFrameOrigin(NSPoint(x: x, y: y))
     }
 }
@@ -156,23 +161,32 @@ struct AskView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             inputRow
-            if vm.isLoading { loadingRow }
-            if !vm.errorText.isEmpty { errorRow }
-            if !vm.response.isEmpty { responseRow }
+            Divider().opacity(0.15)
+            contentArea
         }
         .padding(16)
-        .frame(width: kPanelWidth, alignment: .topLeading)
-        .background(
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(background)
+        .environment(\.layoutDirection, vm.isArabic ? .rightToLeft : .leftToRight)
+        .onAppear { inputFocused = true }
+        .onExitCommand { vm.onClose?() }
+    }
+
+    @ViewBuilder private var background: some View {
+        if t.isGlass {
+            VisualEffectBackground()
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
+                )
+        } else {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .fill(t.background)
                 .overlay(
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
                         .strokeBorder(t.accent.opacity(0.25), lineWidth: 1)
                 )
-        )
-        .environment(\.layoutDirection, vm.isArabic ? .rightToLeft : .leftToRight)
-        .onAppear { inputFocused = true }
-        .onExitCommand { vm.onClose?() }
+        }
     }
 
     private var placeholder: String {
@@ -183,18 +197,18 @@ struct AskView: View {
         HStack(spacing: 10) {
             Image(systemName: "sparkles")
                 .foregroundColor(t.accent)
-                .font(.system(size: 16, weight: .semibold))
+                .font(.system(size: 18, weight: .semibold))
 
             TextField(placeholder, text: $vm.input)
                 .textFieldStyle(.plain)
-                .font(.system(size: 16))
+                .font(.system(size: 18))
                 .foregroundColor(t.textPrimary)
                 .focused($inputFocused)
                 .onSubmit { vm.send() }
 
             Button(action: { vm.pinned.toggle() }) {
                 Image(systemName: vm.pinned ? "pin.fill" : "pin")
-                    .font(.system(size: 14))
+                    .font(.system(size: 15))
                     .foregroundColor(vm.pinned ? t.accent : t.textSecondary)
             }
             .buttonStyle(.plain)
@@ -208,7 +222,7 @@ struct AskView: View {
 
             Button(action: { vm.send() }) {
                 Image(systemName: "arrow.up.circle.fill")
-                    .font(.system(size: 22))
+                    .font(.system(size: 24))
                     .foregroundColor(vm.input.isEmpty ? t.textSecondary.opacity(0.4) : t.accent)
             }
             .buttonStyle(.plain)
@@ -216,34 +230,34 @@ struct AskView: View {
         }
     }
 
-    private var loadingRow: some View {
-        HStack(spacing: 8) {
-            ProgressView().controlSize(.small)
-            Text(vm.isArabic ? "هيرميس يفكّر…" : "Hermes is thinking…")
-                .font(.system(size: 13))
-                .foregroundColor(t.textSecondary)
-        }
-    }
-
-    private var errorRow: some View {
-        Text(vm.errorText)
-            .font(.system(size: 13))
-            .foregroundColor(.red)
-            .textSelection(.enabled)
-    }
-
-    private var responseRow: some View {
+    private var contentArea: some View {
         ScrollView {
-            Text(vm.response)
-                .font(.system(size: 14))
-                .foregroundColor(t.textPrimary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .textSelection(.enabled)
-                .padding(12)
+            VStack(alignment: .leading, spacing: 10) {
+                if vm.isLoading {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text(vm.isArabic ? "هيرميس يفكّر…" : "Hermes is thinking…")
+                            .font(.system(size: 14))
+                            .foregroundColor(t.textSecondary)
+                    }
+                }
+                if !vm.errorText.isEmpty {
+                    Text(vm.errorText)
+                        .font(.system(size: 14))
+                        .foregroundColor(.red)
+                        .textSelection(.enabled)
+                }
+                if !vm.response.isEmpty {
+                    Text(vm.response)
+                        .font(.system(size: 16))
+                        .foregroundColor(t.textPrimary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 2)
         }
-        .frame(maxHeight: 360)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous).fill(t.surface)
-        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
