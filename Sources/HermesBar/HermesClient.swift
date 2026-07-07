@@ -1,8 +1,5 @@
 import Foundation
 
-// Talks to the local Hermes API server (`hermes gateway`) using the
-// OpenAI-compatible /v1/chat/completions endpoint. Supports inline screenshots,
-// a reasoning-effort level, and streaming (token-by-token) responses.
 final class HermesClient {
     static let shared = HermesClient()
 
@@ -35,17 +32,17 @@ final class HermesClient {
     }
 
     private func makeRequest(question: String,
-                             screenshotBase64: String?,
+                             imageDataURLs: [String],
                              reasoningEffort: String?,
                              stream: Bool) -> URLRequest? {
         let s = Settings.shared
         guard let url = URL(string: "\(s.host)/v1/chat/completions") else { return nil }
 
         var content: [[String: Any]] = [["type": "text", "text": question]]
-        if let b64 = screenshotBase64 {
+        for durl in imageDataURLs {
             content.append([
                 "type": "image_url",
-                "image_url": ["url": "data:image/png;base64,\(b64)", "detail": "high"]
+                "image_url": ["url": durl, "detail": "high"]
             ])
         }
 
@@ -68,15 +65,14 @@ final class HermesClient {
         return req
     }
 
-    // Streaming call: `onDelta` fires per token chunk; `onDone` at the end.
     func askStream(question: String,
-                   screenshotBase64: String?,
+                   imageDataURLs: [String] = [],
                    reasoningEffort: String? = nil,
                    onDelta: @escaping (String) -> Void,
                    onDone: @escaping (Error?) -> Void) {
 
         guard let req = makeRequest(question: question,
-                                    screenshotBase64: screenshotBase64,
+                                    imageDataURLs: imageDataURLs,
                                     reasoningEffort: reasoningEffort,
                                     stream: true) else {
             DispatchQueue.main.async { onDone(ClientError.notReachable) }

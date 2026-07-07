@@ -1,6 +1,40 @@
 import AppKit
 import SwiftUI
 import Combine
+import UniformTypeIdentifiers
+
+struct AttachmentItem: Identifiable, Equatable {
+    let id = UUID()
+    let url: URL
+    var name: String { url.lastPathComponent }
+    var isImage: Bool {
+        ["png","jpg","jpeg","gif","webp","heic","bmp","tiff","tif"].contains(url.pathExtension.lowercased())
+    }
+    var isDirectory: Bool {
+        var isDir: ObjCBool = false
+        FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
+        return isDir.boolValue
+    }
+    var symbol: String { isImage ? "photo" : (isDirectory ? "folder" : "doc") }
+}
+
+func mimeType(ext: String) -> String {
+    switch ext.lowercased() {
+    case "png": return "image/png"
+    case "jpg", "jpeg": return "image/jpeg"
+    case "gif": return "image/gif"
+    case "webp": return "image/webp"
+    case "heic": return "image/heic"
+    case "bmp": return "image/bmp"
+    case "tiff", "tif": return "image/tiff"
+    default: return "application/octet-stream"
+    }
+}
+
+func imageDataURL(for url: URL, maxBytes: Int = 5_000_000) -> String? {
+    guard let data = try? Data(contentsOf: url), data.count <= maxBytes else { return nil }
+    return "data:\(mimeType(ext: url.pathExtension));base64,\(data.base64EncodedString())"
+}
 
 enum ReasoningLevel: String, CaseIterable {
     case minimal, low, medium, high
@@ -53,7 +87,8 @@ final class AskViewModel: ObservableObject {
     @Published var errorText: String = ""
     @Published var isLoading: Bool = false
     @Published var pinned: Bool = false
-    @Published var reasoning: String = UserDefaults.standard.string(forKey: "hb.reasoning") ?? "low"
+    @Published var attachments: [AttachmentItem] = []
+    @Published var reasoning: String = UserDefaults.standard.string(forKey: "hb.reasoning") ?? "minimal"
     @Published var withScreenshot: Bool =
         (UserDefaults.standard.object(forKey: "hb.withshot") as? Bool) ?? true
 
@@ -72,6 +107,16 @@ final class AskViewModel: ObservableObject {
         UserDefaults.standard.set(on, forKey: "hb.withshot")
     }
 
+    func addAttachment(_ url: URL) {
+        if !attachments.contains(where: { $0.url == url }) {
+            attachments.append(AttachmentItem(url: url))
+        }
+    }
+
+    func removeAttachment(_ item: AttachmentItem) {
+        attachments.removeAll { $0.id == item.id }
+    }
+
     func refreshFromSettings() {
         theme = Settings.shared.theme
         isArabic = Settings.shared.language == .arabic
@@ -82,23 +127,51 @@ final class AskViewModel: ObservableObject {
         response = ""
         errorText = ""
         isLoading = false
+        attachments = []
         refreshFromSettings()
     }
 
     func send() {
-        let question = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !question.isEmpty, !isLoading else { return }
+        let q0 = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard (!q0.isEmpty || !attachments.isEmpty), !isLoading else { return }
         isLoading = true
         errorText = ""
         response = ""
 
+        let atts = attachments
+        attachments = []
         let wantsShot = withScreenshot
         let effort = reasoning
+        let ar = isArabic
+
         DispatchQueue.global(qos: .userInitiated).async {
-            let shot = wantsShot ? Screenshot.captureBase64PNG() : nil
+            var images: [String] = []
+            if wantsShot, let shot = Screenshot.captureBase64PNG() {
+                images.append("data:image/png;base64,\(shot)")
+            }
+            var pathNotes: [String] = []
+            for a in atts {
+                if a.isImage, let durl = imageDataURL(for: a.url) {
+                    images.append(durl)
+                } else {
+                    pathNotes.append(a.url.path)
+                }
+            }
+
+            var text = q0
+            if text.isEmpty {
+                text = ar ? "شوف المرفقات وساعدني." : "Take a look at the attachment(s) and help me."
+            }
+            if !pathNotes.isEmpty {
+                let label = ar
+                    ? "ملفات/مجلدات مرفقة (افتحها بأدواتك):"
+                    : "Attached files/folders (open them with your tools):"
+                text += "\n\n" + label + "\n" + pathNotes.map { "- \($0)" }.joined(separator: "\n")
+            }
+
             HermesClient.shared.askStream(
-                question: question,
-                screenshotBase64: shot,
+                question: text,
+                imageDataURLs: images,
                 reasoningEffort: effort,
                 onDelta: { [weak self] (piece: String) in
                     guard let self = self else { return }
@@ -180,12 +253,14 @@ final class AskPanelController: NSObject, NSWindowDelegate {
 struct AskView: View {
     @ObservedObject var vm: AskViewModel
     @FocusState private var inputFocused: Bool
+    @State private var dropTargeted = false
 
     private var t: Theme { vm.theme }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             inputRow
+            if !vm.attachments.isEmpty { attachmentsRow }
             Divider().opacity(0.15)
             contentArea
             reasoningBar
@@ -193,9 +268,13 @@ struct AskView: View {
         .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(background)
+        .overlay(dropHighlight)
         .environment(\.layoutDirection, vm.isArabic ? .rightToLeft : .leftToRight)
         .onAppear { inputFocused = true }
         .onExitCommand { vm.onClose?() }
+        .onDrop(of: [UTType.fileURL], isTargeted: $dropTargeted) { providers in
+            handleDrop(providers)
+        }
     }
 
     @ViewBuilder private var background: some View {
@@ -212,6 +291,13 @@ struct AskView: View {
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
                         .strokeBorder(t.accent.opacity(0.25), lineWidth: 1)
                 )
+        }
+    }
+
+    @ViewBuilder private var dropHighlight: some View {
+        if dropTargeted {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(t.accent, lineWidth: 2)
         }
     }
 
@@ -232,6 +318,14 @@ struct AskView: View {
                 .focused($inputFocused)
                 .onSubmit { vm.send() }
 
+            Button(action: openFilePicker) {
+                Image(systemName: "paperclip")
+                    .font(.system(size: 15))
+                    .foregroundColor(t.textSecondary)
+            }
+            .buttonStyle(.plain)
+            .help(vm.isArabic ? "إرفاق ملف أو صورة (أو اسحبها للنافذة)" : "Attach file or image (or drag onto the window)")
+
             Button(action: { vm.setWithScreenshot(!vm.withScreenshot) }) {
                 Image(systemName: vm.withScreenshot ? "eye.fill" : "eye.slash")
                     .font(.system(size: 15))
@@ -251,11 +345,43 @@ struct AskView: View {
             Button(action: { vm.send() }) {
                 Image(systemName: "arrow.up.circle.fill")
                     .font(.system(size: 24))
-                    .foregroundColor(vm.input.isEmpty ? t.textSecondary.opacity(0.4) : t.accent)
+                    .foregroundColor(canSend ? t.accent : t.textSecondary.opacity(0.4))
             }
             .buttonStyle(.plain)
-            .disabled(vm.input.isEmpty || vm.isLoading)
+            .disabled(!canSend || vm.isLoading)
         }
+    }
+
+    private var canSend: Bool {
+        !vm.input.trimmingCharacters(in: .whitespaces).isEmpty || !vm.attachments.isEmpty
+    }
+
+    private var attachmentsRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(vm.attachments) { att in
+                    HStack(spacing: 5) {
+                        Image(systemName: att.symbol)
+                            .font(.system(size: 11))
+                            .foregroundColor(t.accent)
+                        Text(att.name)
+                            .font(.system(size: 12))
+                            .foregroundColor(t.textPrimary)
+                            .lineLimit(1)
+                        Button(action: { vm.removeAttachment(att) }) {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 12))
+                                .foregroundColor(t.textSecondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill(t.surface))
+                }
+            }
+        }
+        .frame(maxHeight: 30)
     }
 
     private var contentArea: some View {
@@ -314,5 +440,29 @@ struct AskView: View {
             }
             Spacer()
         }
+    }
+
+    private func openFilePicker() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.begin { resp in
+            if resp == .OK {
+                for url in panel.urls { vm.addAttachment(url) }
+            }
+        }
+    }
+
+    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        var handled = false
+        for p in providers where p.canLoadObject(ofClass: URL.self) {
+            handled = true
+            _ = p.loadObject(ofClass: URL.self) { url, _ in
+                guard let url = url else { return }
+                DispatchQueue.main.async { vm.addAttachment(url) }
+            }
+        }
+        return handled
     }
 }
