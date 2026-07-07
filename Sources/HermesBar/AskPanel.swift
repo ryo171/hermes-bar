@@ -2,7 +2,18 @@ import AppKit
 import SwiftUI
 import Combine
 
-// MARK: - Frosted-glass background (macOS vibrancy)
+// Reasoning-effort levels exposed in the panel's bottom bar.
+enum ReasoningLevel: String, CaseIterable {
+    case minimal, low, medium, high
+    func label(ar: Bool) -> String {
+        switch self {
+        case .minimal: return ar ? "أدنى" : "Min"
+        case .low:     return ar ? "منخفض" : "Low"
+        case .medium:  return ar ? "متوسط" : "Med"
+        case .high:    return ar ? "عالي" : "High"
+        }
+    }
+}
 
 struct VisualEffectBackground: NSViewRepresentable {
     func makeNSView(context: Context) -> NSVisualEffectView {
@@ -18,8 +29,6 @@ struct VisualEffectBackground: NSViewRepresentable {
     func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
 }
 
-// MARK: - Resizable borderless floating panel (the Cowork-style window)
-
 final class FloatingPanel: NSPanel {
     init(contentRect: NSRect) {
         super.init(contentRect: contentRect,
@@ -31,15 +40,13 @@ final class FloatingPanel: NSPanel {
         backgroundColor = .clear
         isOpaque = false
         hasShadow = true
-        minSize = NSSize(width: 460, height: 220)
+        minSize = NSSize(width: 460, height: 240)
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
     }
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
 }
-
-// MARK: - View model shared between AppKit and SwiftUI
 
 final class AskViewModel: ObservableObject {
     @Published var input: String = ""
@@ -48,11 +55,17 @@ final class AskViewModel: ObservableObject {
     @Published var isLoading: Bool = false
     @Published var withScreenshot: Bool = true
     @Published var pinned: Bool = false
+    @Published var reasoning: String = UserDefaults.standard.string(forKey: "hb.reasoning") ?? "low"
 
     @Published var theme: Theme = Settings.shared.theme
     @Published var isArabic: Bool = Settings.shared.language == .arabic
 
     var onClose: (() -> Void)?
+
+    func setReasoning(_ v: String) {
+        reasoning = v
+        UserDefaults.standard.set(v, forKey: "hb.reasoning")
+    }
 
     func refreshFromSettings() {
         theme = Settings.shared.theme
@@ -76,9 +89,12 @@ final class AskViewModel: ObservableObject {
         response = ""
 
         let wantsShot = withScreenshot
+        let effort = reasoning
         DispatchQueue.global(qos: .userInitiated).async {
             let shot = wantsShot ? Screenshot.captureBase64PNG() : nil
-            HermesClient.shared.ask(question: question, screenshotBase64: shot) { [weak self] result in
+            HermesClient.shared.ask(question: question,
+                                    screenshotBase64: shot,
+                                    reasoningEffort: effort) { [weak self] result in
                 guard let self = self else { return }
                 self.isLoading = false
                 switch result {
@@ -90,12 +106,10 @@ final class AskViewModel: ObservableObject {
     }
 }
 
-// MARK: - Panel controller
-
 final class AskPanelController: NSObject, NSWindowDelegate {
     private var panel: FloatingPanel?
     private let viewModel = AskViewModel()
-    private let defaultSize = NSSize(width: 720, height: 460)
+    private let defaultSize = NSSize(width: 720, height: 480)
 
     var isVisible: Bool { panel?.isVisible ?? false }
 
@@ -103,7 +117,7 @@ final class AskPanelController: NSObject, NSWindowDelegate {
         let d = UserDefaults.standard
         let w = d.double(forKey: "hb.win.w")
         let h = d.double(forKey: "hb.win.h")
-        if w >= 460, h >= 220 { return NSSize(width: w, height: h) }
+        if w >= 460, h >= 240 { return NSSize(width: w, height: h) }
         return defaultSize
     }
 
@@ -150,8 +164,6 @@ final class AskPanelController: NSObject, NSWindowDelegate {
     }
 }
 
-// MARK: - SwiftUI content
-
 struct AskView: View {
     @ObservedObject var vm: AskViewModel
     @FocusState private var inputFocused: Bool
@@ -163,6 +175,7 @@ struct AskView: View {
             inputRow
             Divider().opacity(0.15)
             contentArea
+            reasoningBar
         }
         .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -259,5 +272,32 @@ struct AskView: View {
             .padding(.vertical, 2)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var reasoningBar: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "gauge.with.dots.needle.33percent")
+                .font(.system(size: 12))
+                .foregroundColor(t.textSecondary)
+            Text(vm.isArabic ? "التفكير:" : "Thinking:")
+                .font(.system(size: 11))
+                .foregroundColor(t.textSecondary)
+
+            ForEach(ReasoningLevel.allCases, id: \.self) { lvl in
+                let selected = vm.reasoning == lvl.rawValue
+                Button(action: { vm.setReasoning(lvl.rawValue) }) {
+                    Text(lvl.label(ar: vm.isArabic))
+                        .font(.system(size: 11, weight: selected ? .bold : .regular))
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 3)
+                        .background(
+                            Capsule().fill(selected ? t.accent.opacity(0.28) : Color.clear)
+                        )
+                        .foregroundColor(selected ? t.textPrimary : t.textSecondary)
+                }
+                .buttonStyle(.plain)
+            }
+            Spacer()
+        }
     }
 }

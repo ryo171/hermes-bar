@@ -2,7 +2,7 @@ import Foundation
 
 // Talks to the local Hermes API server (`hermes gateway`) using the
 // OpenAI-compatible /v1/chat/completions endpoint, with an optional inline
-// screenshot as documented by Hermes Agent.
+// screenshot and an optional reasoning-effort level.
 final class HermesClient {
     static let shared = HermesClient()
 
@@ -20,7 +20,6 @@ final class HermesClient {
         }
     }
 
-    // Health check against GET /v1/health.
     func health(_ completion: @escaping (Bool) -> Void) {
         let s = Settings.shared
         guard let url = URL(string: "\(s.host)/v1/health") else {
@@ -35,9 +34,10 @@ final class HermesClient {
         }.resume()
     }
 
-    // Sends a question plus an optional base64 PNG screenshot; returns the reply.
+    // Sends a question (+ optional screenshot, + optional reasoning level).
     func ask(question: String,
              screenshotBase64: String?,
+             reasoningEffort: String? = nil,
              completion: @escaping (Result<String, Error>) -> Void) {
 
         let s = Settings.shared
@@ -46,7 +46,6 @@ final class HermesClient {
             return
         }
 
-        // Build the multimodal content array.
         var content: [[String: Any]] = [["type": "text", "text": question]]
         if let b64 = screenshotBase64 {
             content.append([
@@ -58,11 +57,14 @@ final class HermesClient {
             ])
         }
 
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "model": "hermes-agent",
             "messages": [["role": "user", "content": content]],
             "stream": false
         ]
+        if let effort = reasoningEffort, !effort.isEmpty {
+            payload["reasoning_effort"] = effort
+        }
 
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
