@@ -96,16 +96,23 @@ final class AskViewModel: ObservableObject {
         let effort = reasoning
         DispatchQueue.global(qos: .userInitiated).async {
             let shot = wantsShot ? Screenshot.captureBase64PNG() : nil
-            HermesClient.shared.ask(question: question,
-                                    screenshotBase64: shot,
-                                    reasoningEffort: effort) { [weak self] result in
-                guard let self = self else { return }
-                self.isLoading = false
-                switch result {
-                case .success(let text): self.response = text
-                case .failure(let err): self.errorText = err.localizedDescription
+            HermesClient.shared.askStream(
+                question: question,
+                screenshotBase64: shot,
+                reasoningEffort: effort,
+                onDelta: { [weak self] piece in
+                    guard let self = self else { return }
+                    if self.isLoading { self.isLoading = false }
+                    self.response += piece
+                },
+                onDone: { [weak self] err in
+                    guard let self = self else { return }
+                    self.isLoading = false
+                    if let err = err, self.response.isEmpty {
+                        self.errorText = err.localizedDescription
+                    }
                 }
-            }
+            )
         }
     }
 }
