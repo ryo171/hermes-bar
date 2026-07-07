@@ -1,8 +1,8 @@
 import Foundation
 
 // Talks to the local Hermes API server (`hermes gateway`) using the
-// OpenAI-compatible /v1/chat/completions endpoint, with an optional inline
-// screenshot and an optional reasoning-effort level.
+// OpenAI-compatible /v1/chat/completions endpoint. Supports inline screenshots,
+// a reasoning-effort level, and streaming (token-by-token) responses.
 final class HermesClient {
     static let shared = HermesClient()
 
@@ -34,33 +34,25 @@ final class HermesClient {
         }.resume()
     }
 
-    // Sends a question (+ optional screenshot, + optional reasoning level).
-    func ask(question: String,
-             screenshotBase64: String?,
-             reasoningEffort: String? = nil,
-             completion: @escaping (Result<String, Error>) -> Void) {
-
+    private func makeRequest(question: String,
+                             screenshotBase64: String?,
+                             reasoningEffort: String?,
+                             stream: Bool) -> URLRequest? {
         let s = Settings.shared
-        guard let url = URL(string: "\(s.host)/v1/chat/completions") else {
-            DispatchQueue.main.async { completion(.failure(ClientError.notReachable)) }
-            return
-        }
+        guard let url = URL(string: "\(s.host)/v1/chat/completions") else { return nil }
 
         var content: [[String: Any]] = [["type": "text", "text": question]]
         if let b64 = screenshotBase64 {
             content.append([
                 "type": "image_url",
-                "image_url": [
-                    "url": "data:image/png;base64,\(b64)",
-                    "detail": "high"
-                ]
+                "image_url": ["url": "data:image/png;base64,\(b64)", "detail": "high"]
             ])
         }
 
         var payload: [String: Any] = [
             "model": "hermes-agent",
             "messages": [["role": "user", "content": content]],
-            "stream": false
+            "stream": stream
         ]
         if let effort = reasoningEffort, !effort.isEmpty {
             payload["reasoning_effort"] = effort
@@ -68,38 +60,52 @@ final class HermesClient {
 
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
-        req.timeoutInterval = 180
+        req.timeoutInterval = 300
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         req.setValue("Bearer \(s.resolvedAPIKey())", forHTTPHeaderField: "Authorization")
         req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+        return req
+    }
 
-        URLSession.shared.dataTask(with: req) { data, response, error in
-            func finish(_ r: Result<String, Error>) {
-                DispatchQueue.main.async { completion(r) }
+    // Streaming call: `onDelta` fires per token chunk; `onDone` at the end.
+    func askStream(question: String,
+                   screenshotBase64: String?,
+                   reasoningEffort: String? = nil,
+                   onDelta: @escaping (String) -> Void,
+                   onDone: @escaping (Error?) -> Void) {
+
+        guard let req = makeRequest(question: question,
+                                    screenshotBase64: screenshotBase64,
+                                    reasoningEffort: reasoningEffort,
+                                    stream: true) else {
+            DispatchQueue.main.async { onDone(ClientError.notReachable) }
+            return
+        }
+
+        Task {
+            do {
+                let (bytes, response) = try await URLSession.shared.bytes(for: req)
+                if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+                    await MainActor.run { onDone(ClientError.badStatus(http.statusCode, "")) }
+                    return
+                }
+                for try await line in bytes.lines {
+                    guard line.hasPrefix("data:") else { continue }
+                    let payload = String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces)
+                    if payload == "[DONE]" { break }
+                    if let data = payload.data(using: .utf8),
+                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                       let choices = json["choices"] as? [[String: Any]],
+                       let delta = choices.first?["delta"] as? [String: Any],
+                       let piece = delta["content"] as? String, !piece.isEmpty {
+                        await MainActor.run { onDelta(piece) }
+                    }
+                }
+                await MainActor.run { onDone(nil) }
+            } catch {
+                await MainActor.run { onDone(ClientError.notReachable) }
             }
-            if error != nil {
-                finish(.failure(ClientError.notReachable))
-                return
-            }
-            guard let http = response as? HTTPURLResponse, let data = data else {
-                finish(.failure(ClientError.badResponse))
-                return
-            }
-            guard (200...299).contains(http.statusCode) else {
-                let body = String(data: data, encoding: .utf8) ?? ""
-                finish(.failure(ClientError.badStatus(http.statusCode, body)))
-                return
-            }
-            guard
-                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                let choices = json["choices"] as? [[String: Any]],
-                let message = choices.first?["message"] as? [String: Any],
-                let text = message["content"] as? String
-            else {
-                finish(.failure(ClientError.badResponse))
-                return
-            }
-            finish(.success(text))
-        }.resume()
+        }
     }
 }
