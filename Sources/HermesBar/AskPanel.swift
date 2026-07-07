@@ -100,12 +100,12 @@ final class AskViewModel: ObservableObject {
                 question: question,
                 screenshotBase64: shot,
                 reasoningEffort: effort,
-                onDelta: { [weak self] piece in
+                onDelta: { [weak self] (piece: String) in
                     guard let self = self else { return }
                     if self.isLoading { self.isLoading = false }
                     self.response += piece
                 },
-                onDone: { [weak self] err in
+                onDone: { [weak self] (err: Error?) in
                     guard let self = self else { return }
                     self.isLoading = false
                     if let err = err, self.response.isEmpty {
