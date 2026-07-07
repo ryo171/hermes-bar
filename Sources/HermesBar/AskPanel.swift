@@ -2,6 +2,9 @@ import AppKit
 import SwiftUI
 import Combine
 
+// Panel width. Bumped wider so long RTL replies aren't cramped.
+let kPanelWidth: CGFloat = 680
+
 // MARK: - Borderless floating panel (the Cowork-style window)
 
 final class FloatingPanel: NSPanel {
@@ -30,6 +33,7 @@ final class AskViewModel: ObservableObject {
     @Published var errorText: String = ""
     @Published var isLoading: Bool = false
     @Published var withScreenshot: Bool = true
+    @Published var pinned: Bool = false     // when true, window stays until hotkey pressed again
 
     @Published var theme: Theme = Settings.shared.theme
     @Published var isArabic: Bool = Settings.shared.language == .arabic
@@ -47,6 +51,7 @@ final class AskViewModel: ObservableObject {
         errorText = ""
         isLoading = false
         self.withScreenshot = withScreenshot
+        // note: `pinned` is intentionally NOT reset, so the preference sticks.
         refreshFromSettings()
     }
 
@@ -74,7 +79,7 @@ final class AskViewModel: ObservableObject {
 
 // MARK: - Panel controller
 
-final class AskPanelController {
+final class AskPanelController: NSObject, NSWindowDelegate {
     private var panel: FloatingPanel?
     private let viewModel = AskViewModel()
     private var cancellables = Set<AnyCancellable>()
@@ -87,15 +92,12 @@ final class AskPanelController {
         viewModel.onClose = { [weak self] in self?.dismiss() }
 
         if panel == nil {
-            let rect = NSRect(x: 0, y: 0, width: 560, height: 68)
+            let rect = NSRect(x: 0, y: 0, width: kPanelWidth, height: 68)
             let p = FloatingPanel(contentRect: rect)
-            // A hosting *controller* lets the panel resize itself as the SwiftUI
-            // content grows (e.g. when the response appears).
             p.contentViewController = NSHostingController(rootView: AskView(vm: viewModel))
+            p.delegate = self
             panel = p
 
-            // Whenever the content changes size, keep the TOP edge fixed so the
-            // window grows downward instead of jumping around.
             viewModel.objectWillChange
                 .sink { [weak self] in
                     DispatchQueue.main.async { self?.repositionKeepingTop() }
@@ -117,7 +119,13 @@ final class AskPanelController {
         viewModel.refreshFromSettings()
     }
 
-    // Records the fixed top line (near the top-center of the active screen).
+    // Click-away to close: when the panel loses focus and isn't pinned, hide it.
+    func windowDidResignKey(_ notification: Notification) {
+        if !viewModel.pinned {
+            DispatchQueue.main.async { [weak self] in self?.dismiss() }
+        }
+    }
+
     private func computeAnchor() {
         let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }
             ?? NSScreen.main
@@ -132,7 +140,7 @@ final class AskPanelController {
         guard let visible = screen?.visibleFrame else { return }
         let size = panel.frame.size
         let x = visible.midX - size.width / 2
-        let y = anchorTopY - size.height          // top stays put, grows down
+        let y = anchorTopY - size.height
         panel.setFrameOrigin(NSPoint(x: x, y: y))
     }
 }
@@ -153,7 +161,7 @@ struct AskView: View {
             if !vm.response.isEmpty { responseRow }
         }
         .padding(16)
-        .frame(width: 560, alignment: .topLeading)
+        .frame(width: kPanelWidth, alignment: .topLeading)
         .background(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .fill(t.background)
@@ -164,7 +172,7 @@ struct AskView: View {
         )
         .environment(\.layoutDirection, vm.isArabic ? .rightToLeft : .leftToRight)
         .onAppear { inputFocused = true }
-        .onExitCommand { vm.onClose?() }   // Esc closes
+        .onExitCommand { vm.onClose?() }
     }
 
     private var placeholder: String {
@@ -183,6 +191,14 @@ struct AskView: View {
                 .foregroundColor(t.textPrimary)
                 .focused($inputFocused)
                 .onSubmit { vm.send() }
+
+            Button(action: { vm.pinned.toggle() }) {
+                Image(systemName: vm.pinned ? "pin.fill" : "pin")
+                    .font(.system(size: 14))
+                    .foregroundColor(vm.pinned ? t.accent : t.textSecondary)
+            }
+            .buttonStyle(.plain)
+            .help(vm.isArabic ? "تثبيت النافذة" : "Pin window")
 
             if vm.withScreenshot {
                 Image(systemName: "photo")
@@ -225,7 +241,7 @@ struct AskView: View {
                 .textSelection(.enabled)
                 .padding(12)
         }
-        .frame(maxHeight: 280)
+        .frame(maxHeight: 360)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous).fill(t.surface)
         )
