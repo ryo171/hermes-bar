@@ -1,0 +1,101 @@
+import AppKit
+import Carbon.HIToolbox
+
+// User-configurable settings, persisted as JSON at ~/.hermes/hermes-bar.json so
+// it lives right next to your Hermes config.
+
+enum AppLanguage: String, Codable, CaseIterable {
+    case arabic
+    case english
+}
+
+struct HotKeyCombo: Codable, Equatable {
+    var keyCode: UInt32
+    var cmd: Bool
+    var shift: Bool
+    var option: Bool
+    var control: Bool
+
+    static let `default` = HotKeyCombo(keyCode: UInt32(kVK_ANSI_H),
+                                       cmd: true, shift: true, option: false, control: false)
+
+    var carbonModifiers: UInt32 {
+        var m: UInt32 = 0
+        if cmd { m |= UInt32(cmdKey) }
+        if shift { m |= UInt32(shiftKey) }
+        if option { m |= UInt32(optionKey) }
+        if control { m |= UInt32(controlKey) }
+        return m
+    }
+
+    // Human-readable label, e.g. "⌘⇧H".
+    var displayString: String {
+        var s = ""
+        if control { s += "⌃" }
+        if option { s += "⌥" }
+        if shift { s += "⇧" }
+        if cmd { s += "⌘" }
+        s += KeyNames.name(for: keyCode)
+        return s
+    }
+}
+
+final class Settings: Codable {
+    static let shared = Settings.load()
+    static let didChangeNotification = Notification.Name("HermesBarSettingsDidChange")
+
+    var language: AppLanguage = .arabic
+    var themeName: String = Theme.defaultTheme.name
+    var hotKey: HotKeyCombo = .default
+    var host: String = "http://localhost:8642"
+    var apiKey: String = ""     // empty → resolved from ~/.hermes/.env at request time
+    var captureFullScreen: Bool = true
+
+    var theme: Theme { Theme.byName(themeName) }
+
+    // MARK: - Persistence
+
+    static var hermesDir: String {
+        (NSHomeDirectory() as NSString).appendingPathComponent(".hermes")
+    }
+    private static var fileURL: URL {
+        URL(fileURLWithPath: hermesDir).appendingPathComponent("hermes-bar.json")
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case language, themeName, hotKey, host, apiKey, captureFullScreen
+    }
+
+    static func load() -> Settings {
+        guard let data = try? Data(contentsOf: fileURL),
+              let s = try? JSONDecoder().decode(Settings.self, from: data)
+        else { return Settings() }
+        return s
+    }
+
+    func save() {
+        try? FileManager.default.createDirectory(
+            atPath: Settings.hermesDir, withIntermediateDirectories: true)
+        if let data = try? JSONEncoder().encode(self) {
+            try? data.write(to: Settings.fileURL)
+        }
+        NotificationCenter.default.post(name: Settings.didChangeNotification, object: nil)
+    }
+
+    // Resolve the API key: explicit setting wins, else read ~/.hermes/.env,
+    // else fall back to Hermes' documented local-dev default.
+    func resolvedAPIKey() -> String {
+        if !apiKey.isEmpty { return apiKey }
+        let envPath = (Settings.hermesDir as NSString).appendingPathComponent(".env")
+        if let text = try? String(contentsOfFile: envPath, encoding: .utf8) {
+            for raw in text.split(separator: "\n") {
+                let line = raw.trimmingCharacters(in: .whitespaces)
+                if line.hasPrefix("API_SERVER_KEY=") {
+                    return String(line.dropFirst("API_SERVER_KEY=".count))
+                        .trimmingCharacters(in: CharacterSet(charactersIn: "\"' "))
+                }
+            }
+        }
+        return "change-me-local-dev"
+    }
+}

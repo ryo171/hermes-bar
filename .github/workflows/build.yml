@@ -1,0 +1,24 @@
+name: Build HermesBar
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: {}
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Show toolchain
+        run: swift --version
+      - name: Build & package the .app
+        run: |
+          chmod +x make_app.sh
+          ./make_app.sh
+      - name: Zip the app for download
+        run: ditto -c -k --keepParent HermesBar.app HermesBar-app.zip
+      - name: Upload the ready-to-run app
+        uses: actions/upload-artifact@v4
+        with:
+          name: HermesBar-app
+          path: HermesBar-app.zip
