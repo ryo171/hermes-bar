@@ -36,18 +36,6 @@ func imageDataURL(for url: URL, maxBytes: Int = 5_000_000) -> String? {
     return "data:\(mimeType(ext: url.pathExtension));base64,\(data.base64EncodedString())"
 }
 
-enum ReasoningLevel: String, CaseIterable {
-    case minimal, low, medium, high
-    func label(ar: Bool) -> String {
-        switch self {
-        case .minimal: return ar ? "أدنى" : "Min"
-        case .low:     return ar ? "منخفض" : "Low"
-        case .medium:  return ar ? "متوسط" : "Med"
-        case .high:    return ar ? "عالي" : "High"
-        }
-    }
-}
-
 struct VisualEffectBackground: NSViewRepresentable {
     func makeNSView(context: Context) -> NSVisualEffectView {
         let v = NSVisualEffectView()
@@ -88,7 +76,7 @@ final class AskViewModel: ObservableObject {
     @Published var isLoading: Bool = false
     @Published var pinned: Bool = false
     @Published var attachments: [AttachmentItem] = []
-    @Published var reasoning: String = UserDefaults.standard.string(forKey: "hb.reasoning") ?? "minimal"
+    @Published var mode: String = UserDefaults.standard.string(forKey: "hb.mode") ?? "fast"
     @Published var withScreenshot: Bool =
         (UserDefaults.standard.object(forKey: "hb.withshot") as? Bool) ?? true
 
@@ -97,9 +85,14 @@ final class AskViewModel: ObservableObject {
 
     var onClose: (() -> Void)?
 
-    func setReasoning(_ v: String) {
-        reasoning = v
-        UserDefaults.standard.set(v, forKey: "hb.reasoning")
+    func setMode(_ m: String) {
+        mode = m
+        UserDefaults.standard.set(m, forKey: "hb.mode")
+    }
+
+    private func fastHost() -> String {
+        let h = UserDefaults.standard.string(forKey: "hb.fasthost") ?? ""
+        return h.isEmpty ? Settings.shared.host : h
     }
 
     func setWithScreenshot(_ on: Bool) {
@@ -141,12 +134,17 @@ final class AskViewModel: ObservableObject {
         let atts = attachments
         attachments = []
         let wantsShot = withScreenshot
-        let effort = reasoning
         let ar = isArabic
+
+        let fast = (mode == "fast")
+        let effort = fast ? "minimal" : "high"
+        let detail = fast ? "low" : "high"
+        let shotMax = fast ? 1280 : 0
+        let host = fast ? fastHost() : Settings.shared.host
 
         DispatchQueue.global(qos: .userInitiated).async {
             var images: [String] = []
-            if wantsShot, let shot = Screenshot.captureBase64PNG() {
+            if wantsShot, let shot = Screenshot.captureBase64PNG(maxPx: shotMax) {
                 images.append("data:image/png;base64,\(shot)")
             }
             var pathNotes: [String] = []
@@ -170,8 +168,10 @@ final class AskViewModel: ObservableObject {
             }
 
             HermesClient.shared.askStream(
+                host: host,
                 question: text,
                 imageDataURLs: images,
+                imageDetail: detail,
                 reasoningEffort: effort,
                 onDelta: { [weak self] (piece: String) in
                     guard let self = self else { return }
@@ -263,7 +263,7 @@ struct AskView: View {
             if !vm.attachments.isEmpty { attachmentsRow }
             Divider().opacity(0.15)
             contentArea
-            reasoningBar
+            modeBar
         }
         .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -324,7 +324,7 @@ struct AskView: View {
                     .foregroundColor(t.textSecondary)
             }
             .buttonStyle(.plain)
-            .help(vm.isArabic ? "إرفاق ملف أو صورة (أو اسحبها للنافذة)" : "Attach file or image (or drag onto the window)")
+            .help(vm.isArabic ? "إرفاق ملف أو صورة (أو اسحبها للنافذة)" : "Attach file or image")
 
             Button(action: { vm.setWithScreenshot(!vm.withScreenshot) }) {
                 Image(systemName: vm.withScreenshot ? "eye.fill" : "eye.slash")
@@ -415,22 +415,19 @@ struct AskView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    private var reasoningBar: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "gauge.with.dots.needle.33percent")
+    private var modeBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "bolt.fill")
                 .font(.system(size: 12))
                 .foregroundColor(t.textSecondary)
-            Text(vm.isArabic ? "التفكير:" : "Thinking:")
-                .font(.system(size: 11))
-                .foregroundColor(t.textSecondary)
 
-            ForEach(ReasoningLevel.allCases, id: \.self) { lvl in
-                let selected = vm.reasoning == lvl.rawValue
-                Button(action: { vm.setReasoning(lvl.rawValue) }) {
-                    Text(lvl.label(ar: vm.isArabic))
-                        .font(.system(size: 11, weight: selected ? .bold : .regular))
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 3)
+            ForEach(["fast", "quality"], id: \.self) { m in
+                let selected = vm.mode == m
+                Button(action: { vm.setMode(m) }) {
+                    Text(modeLabel(m))
+                        .font(.system(size: 12, weight: selected ? .bold : .regular))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 4)
                         .background(
                             Capsule().fill(selected ? t.accent.opacity(0.28) : Color.clear)
                         )
@@ -438,8 +435,26 @@ struct AskView: View {
                 }
                 .buttonStyle(.plain)
             }
+
+            Text(modeHint)
+                .font(.system(size: 10))
+                .foregroundColor(t.textSecondary.opacity(0.7))
+                .lineLimit(1)
+
             Spacer()
         }
+    }
+
+    private func modeLabel(_ m: String) -> String {
+        if m == "fast" { return vm.isArabic ? "سريع" : "Fast" }
+        return vm.isArabic ? "جودة" : "Quality"
+    }
+
+    private var modeHint: String {
+        if vm.mode == "fast" {
+            return vm.isArabic ? "أسرع · لقطة مصغّرة" : "faster · smaller image"
+        }
+        return vm.isArabic ? "أدق · لقطة كاملة" : "deeper · full image"
     }
 
     private func openFilePicker() {
