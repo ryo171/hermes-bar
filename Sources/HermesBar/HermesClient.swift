@@ -31,18 +31,19 @@ final class HermesClient {
         }.resume()
     }
 
-    private func makeRequest(question: String,
+    private func makeRequest(host: String,
+                             question: String,
                              imageDataURLs: [String],
+                             imageDetail: String,
                              reasoningEffort: String?,
                              stream: Bool) -> URLRequest? {
-        let s = Settings.shared
-        guard let url = URL(string: "\(s.host)/v1/chat/completions") else { return nil }
+        guard let url = URL(string: "\(host)/v1/chat/completions") else { return nil }
 
         var content: [[String: Any]] = [["type": "text", "text": question]]
         for durl in imageDataURLs {
             content.append([
                 "type": "image_url",
-                "image_url": ["url": durl, "detail": "high"]
+                "image_url": ["url": durl, "detail": imageDetail]
             ])
         }
 
@@ -60,19 +61,24 @@ final class HermesClient {
         req.timeoutInterval = 300
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-        req.setValue("Bearer \(s.resolvedAPIKey())", forHTTPHeaderField: "Authorization")
+        req.setValue("Bearer \(Settings.shared.resolvedAPIKey())", forHTTPHeaderField: "Authorization")
         req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
         return req
     }
 
-    func askStream(question: String,
+    func askStream(host: String? = nil,
+                   question: String,
                    imageDataURLs: [String] = [],
+                   imageDetail: String = "high",
                    reasoningEffort: String? = nil,
                    onDelta: @escaping (String) -> Void,
                    onDone: @escaping (Error?) -> Void) {
 
-        guard let req = makeRequest(question: question,
+        let useHost = host ?? Settings.shared.host
+        guard let req = makeRequest(host: useHost,
+                                    question: question,
                                     imageDataURLs: imageDataURLs,
+                                    imageDetail: imageDetail,
                                     reasoningEffort: reasoningEffort,
                                     stream: true) else {
             DispatchQueue.main.async { onDone(ClientError.notReachable) }
