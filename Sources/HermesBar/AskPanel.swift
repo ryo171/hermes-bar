@@ -342,6 +342,14 @@ struct AskView: View {
             .buttonStyle(.plain)
             .help(vm.isArabic ? "تثبيت النافذة" : "Pin window")
 
+            Button(action: openHermesDesktop) {
+                Image(systemName: "macwindow.on.rectangle")
+                    .font(.system(size: 15))
+                    .foregroundColor(t.textSecondary)
+            }
+            .buttonStyle(.plain)
+            .help(vm.isArabic ? "افتح هيرميس ديسكتوب (سياق كامل + اختيار المودل)" : "Open Hermes Desktop (full context + model choice)")
+
             Button(action: { vm.send() }) {
                 Image(systemName: "arrow.up.circle.fill")
                     .font(.system(size: 24))
@@ -455,6 +463,14 @@ struct AskView: View {
             return vm.isArabic ? "أسرع · تفكير أقل" : "faster · less thinking"
         }
         return vm.isArabic ? "أعمق · تفكير أعلى" : "deeper · more thinking"
+    }
+
+    private func openHermesDesktop() {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        task.arguments = ["-a", "Hermes"]
+        try? task.run()
+        vm.onClose?()
     }
 
     private func openFilePicker() {
