@@ -137,9 +137,9 @@ final class AskViewModel: ObservableObject {
         let ar = isArabic
 
         let fast = (mode == "fast")
-        let effort = fast ? "minimal" : "high"
-        let detail = fast ? "low" : "high"
-        let shotMax = fast ? 1280 : 0
+        let effort = fast ? "low" : "high"
+        let detail = "high"
+        let shotMax = 0
         let host = fast ? fastHost() : Settings.shared.host
 
         DispatchQueue.global(qos: .userInitiated).async {
@@ -452,9 +452,9 @@ struct AskView: View {
 
     private var modeHint: String {
         if vm.mode == "fast" {
-            return vm.isArabic ? "أسرع · لقطة مصغّرة" : "faster · smaller image"
+            return vm.isArabic ? "أسرع · تفكير أقل" : "faster · less thinking"
         }
-        return vm.isArabic ? "أدق · لقطة كاملة" : "deeper · full image"
+        return vm.isArabic ? "أعمق · تفكير أعلى" : "deeper · more thinking"
     }
 
     private func openFilePicker() {
