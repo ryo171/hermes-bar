@@ -35,6 +35,8 @@ struct MultilineInput: NSViewRepresentable {
         tv.isRichText = false
         tv.font = .systemFont(ofSize: 16)
         tv.textColor = textColor
+        tv.insertionPointColor = textColor
+        tv.typingAttributes = [.foregroundColor: textColor, .font: NSFont.systemFont(ofSize: 16)]
         tv.drawsBackground = false
         tv.isVerticallyResizable = true
         tv.isHorizontallyResizable = false
@@ -56,6 +58,8 @@ struct MultilineInput: NSViewRepresentable {
         guard let tv = nsView.documentView as? NSTextView else { return }
         if tv.string != text { tv.string = text }
         tv.textColor = textColor
+        tv.insertionPointColor = textColor
+        tv.typingAttributes = [.foregroundColor: textColor, .font: NSFont.systemFont(ofSize: 16)]
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -525,7 +529,7 @@ struct AskView: View {
     private var controlRow: some View {
         HStack(spacing: 14) {
             iconButton("paperclip", active: false, help: ar ? "إرفاق ملف أو صورة" : "Attach file or image") { openFilePicker() }
-            iconButton("ant.fill", active: false, help: ar ? "قراءة/فحص سريع للصفحة (Scrapling)" : "Quick read/scrape (Scrapling)") { vm.applySpiderPrefix() }
+            iconButton("doc.text.magnifyingglass", active: false, help: ar ? "قراءة/فحص سريع للصفحة (Scrapling)" : "Quick read/scrape (Scrapling)") { vm.applySpiderPrefix() }
             iconButton(vm.withScreenshot ? "eye.fill" : "eye.slash", active: vm.withScreenshot, help: ar ? "رؤية الشاشة" : "See screen") { vm.setWithScreenshot(!vm.withScreenshot) }
             iconButton(pinIcon, active: vm.pinMode != .off, help: pinHelp) { vm.cyclePinMode() }
             iconButton(vm.notifyWhenDone ? "bell.fill" : "bell.slash", active: vm.notifyWhenDone, help: ar ? "أشعرني لما يخلّص" : "Notify when done") { vm.toggleNotify() }
