@@ -1,5 +1,9 @@
 import Foundation
 
+// Talks to the local Hermes API server (`hermes gateway`) using the
+// OpenAI-compatible /v1/chat/completions endpoint. Supports inline images,
+// per-image detail, a reasoning-effort level, a host override (for Fast/Quality
+// profiles), and streaming.
 final class HermesClient {
     static let shared = HermesClient()
 
@@ -66,13 +70,15 @@ final class HermesClient {
         return req
     }
 
+    // Returns the streaming Task so the caller can cancel it (Stop button).
+    @discardableResult
     func askStream(host: String? = nil,
                    question: String,
                    imageDataURLs: [String] = [],
                    imageDetail: String = "high",
                    reasoningEffort: String? = nil,
                    onDelta: @escaping (String) -> Void,
-                   onDone: @escaping (Error?) -> Void) {
+                   onDone: @escaping (Error?) -> Void) -> Task<Void, Never> {
 
         let useHost = host ?? Settings.shared.host
         guard let req = makeRequest(host: useHost,
@@ -82,10 +88,10 @@ final class HermesClient {
                                     reasoningEffort: reasoningEffort,
                                     stream: true) else {
             DispatchQueue.main.async { onDone(ClientError.notReachable) }
-            return
+            return Task {}
         }
 
-        Task {
+        return Task {
             do {
                 let (bytes, response) = try await URLSession.shared.bytes(for: req)
                 if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
@@ -93,6 +99,7 @@ final class HermesClient {
                     return
                 }
                 for try await line in bytes.lines {
+                    if Task.isCancelled { break }
                     guard line.hasPrefix("data:") else { continue }
                     let payload = String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces)
                     if payload == "[DONE]" { break }
@@ -106,7 +113,11 @@ final class HermesClient {
                 }
                 await MainActor.run { onDone(nil) }
             } catch {
-                await MainActor.run { onDone(ClientError.notReachable) }
+                if Task.isCancelled {
+                    await MainActor.run { onDone(nil) }
+                } else {
+                    await MainActor.run { onDone(ClientError.notReachable) }
+                }
             }
         }
     }
