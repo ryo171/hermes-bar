@@ -1,6 +1,7 @@
 import AppKit
+import UserNotifications
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     private var statusItem: NSStatusItem!
     private let hotKey = GlobalHotKey()
     private var panelController: AskPanelController?
@@ -8,6 +9,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMainMenu()
+        UNUserNotificationCenter.current().delegate = self
+        Notifier.requestAuth()
         setupStatusItem()
         registerHotKey()
 
@@ -21,7 +24,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupMainMenu() {
         let mainMenu = NSMenu()
-
         let appItem = NSMenuItem()
         mainMenu.addItem(appItem)
         let appMenu = NSMenu()
@@ -41,7 +43,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         editMenu.addItem(withTitle: "Select All",
                          action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         editItem.submenu = editMenu
-
         NSApp.mainMenu = mainMenu
     }
 
@@ -58,35 +59,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func rebuildMenu() {
         let ar = Settings.shared.language == .arabic
         let menu = NSMenu()
-
         let askScreen = NSMenuItem(title: ar ? "اسأل عن شاشتي" : "Ask about my screen",
                                    action: #selector(askAboutScreen), keyEquivalent: "")
         askScreen.target = self
         menu.addItem(askScreen)
-
         let askText = NSMenuItem(title: ar ? "اسأل (نص فقط)" : "Ask (text only)",
                                  action: #selector(askTextOnly), keyEquivalent: "")
         askText.target = self
         menu.addItem(askText)
-
         menu.addItem(.separator())
-
         let settings = NSMenuItem(title: ar ? "الإعدادات…" : "Settings…",
                                   action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
         menu.addItem(settings)
-
         let check = NSMenuItem(title: ar ? "فحص الاتصال" : "Check connection",
                                action: #selector(checkConnection), keyEquivalent: "")
         check.target = self
         menu.addItem(check)
-
         menu.addItem(.separator())
-
         let quit = NSMenuItem(title: ar ? "إنهاء Hermes Bar" : "Quit Hermes Bar",
                               action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.addItem(quit)
-
         statusItem.menu = menu
     }
 
@@ -147,5 +140,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func togglePanel() {
         let c = ensureController()
         if c.isVisible { c.dismiss() } else { c.present() }
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .sound])
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        panelController?.presentShowingResult()
+        completionHandler()
     }
 }
