@@ -2,6 +2,25 @@ import AppKit
 import SwiftUI
 import Combine
 import UniformTypeIdentifiers
+import UserNotifications
+
+// Pin behavior: off = click-away closes; absolute = follows you everywhere;
+// scoped = you can leave, and a notification fires when the task finishes.
+enum PinMode: String { case off, absolute, scoped }
+
+enum Notifier {
+    static func requestAuth() {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+    }
+    static func notify(title: String, body: String) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        let req = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(req)
+    }
+}
 
 struct AttachmentItem: Identifiable, Equatable {
     let id = UUID()
@@ -74,7 +93,7 @@ final class AskViewModel: ObservableObject {
     @Published var response: String = ""
     @Published var errorText: String = ""
     @Published var isLoading: Bool = false
-    @Published var pinned: Bool = false
+    @Published var pinMode: PinMode = PinMode(rawValue: UserDefaults.standard.string(forKey: "hb.pinmode") ?? "off") ?? .off
     @Published var attachments: [AttachmentItem] = []
     @Published var mode: String = UserDefaults.standard.string(forKey: "hb.mode") ?? "fast"
     @Published var withScreenshot: Bool =
@@ -98,6 +117,12 @@ final class AskViewModel: ObservableObject {
     func setWithScreenshot(_ on: Bool) {
         withScreenshot = on
         UserDefaults.standard.set(on, forKey: "hb.withshot")
+    }
+
+    func cyclePinMode() {
+        let next: PinMode = (pinMode == .off) ? .absolute : (pinMode == .absolute ? .scoped : .off)
+        pinMode = next
+        UserDefaults.standard.set(next.rawValue, forKey: "hb.pinmode")
     }
 
     func addAttachment(_ url: URL) {
@@ -184,6 +209,13 @@ final class AskViewModel: ObservableObject {
                     if let err = err, self.response.isEmpty {
                         self.errorText = err.localizedDescription
                     }
+                    if self.pinMode == .scoped {
+                        let summary = self.errorText.isEmpty ? String(self.response.prefix(120)) : self.errorText
+                        Notifier.notify(
+                            title: self.isArabic ? "هيرميس خلّص ✅" : "Hermes finished ✅",
+                            body: summary.isEmpty ? (self.isArabic ? "تمّت المهمة" : "Task done") : summary
+                        )
+                    }
                 }
             )
         }
@@ -207,10 +239,7 @@ final class AskPanelController: NSObject, NSWindowDelegate {
         return defaultSize
     }
 
-    func present() {
-        viewModel.reset()
-        viewModel.onClose = { [weak self] in self?.dismiss() }
-
+    private func ensurePanel() {
         if panel == nil {
             let rect = NSRect(origin: .zero, size: savedSize())
             let p = FloatingPanel(contentRect: rect)
@@ -218,6 +247,20 @@ final class AskPanelController: NSObject, NSWindowDelegate {
             p.delegate = self
             panel = p
         }
+    }
+
+    func present() {
+        viewModel.reset()
+        viewModel.onClose = { [weak self] in self?.dismiss() }
+        ensurePanel()
+        position(panel!)
+        NSApp.activate(ignoringOtherApps: true)
+        panel!.makeKeyAndOrderFront(nil)
+    }
+
+    func presentShowingResult() {
+        viewModel.onClose = { [weak self] in self?.dismiss() }
+        ensurePanel()
         position(panel!)
         NSApp.activate(ignoringOtherApps: true)
         panel!.makeKeyAndOrderFront(nil)
@@ -228,9 +271,8 @@ final class AskPanelController: NSObject, NSWindowDelegate {
     func applyTheme() { viewModel.refreshFromSettings() }
 
     func windowDidResignKey(_ notification: Notification) {
-        if !viewModel.pinned {
-            DispatchQueue.main.async { [weak self] in self?.dismiss() }
-        }
+        if viewModel.pinMode == .absolute { return }
+        DispatchQueue.main.async { [weak self] in self?.dismiss() }
     }
 
     func windowDidResize(_ notification: Notification) {
@@ -324,7 +366,7 @@ struct AskView: View {
                     .foregroundColor(t.textSecondary)
             }
             .buttonStyle(.plain)
-            .help(vm.isArabic ? "إرفاق ملف أو صورة (أو اسحبها للنافذة)" : "Attach file or image")
+            .help(vm.isArabic ? "إرفاق ملف أو صورة" : "Attach file or image")
 
             Button(action: { vm.setWithScreenshot(!vm.withScreenshot) }) {
                 Image(systemName: vm.withScreenshot ? "eye.fill" : "eye.slash")
@@ -334,13 +376,13 @@ struct AskView: View {
             .buttonStyle(.plain)
             .help(vm.isArabic ? "رؤية الشاشة (أسرع لو مطفّية)" : "See screen (faster when off)")
 
-            Button(action: { vm.pinned.toggle() }) {
-                Image(systemName: vm.pinned ? "pin.fill" : "pin")
+            Button(action: { vm.cyclePinMode() }) {
+                Image(systemName: pinIcon)
                     .font(.system(size: 15))
-                    .foregroundColor(vm.pinned ? t.accent : t.textSecondary)
+                    .foregroundColor(vm.pinMode == .off ? t.textSecondary : t.accent)
             }
             .buttonStyle(.plain)
-            .help(vm.isArabic ? "تثبيت النافذة" : "Pin window")
+            .help(pinHelp)
 
             Button(action: openHermesDesktop) {
                 Image(systemName: "macwindow.on.rectangle")
@@ -348,7 +390,7 @@ struct AskView: View {
                     .foregroundColor(t.textSecondary)
             }
             .buttonStyle(.plain)
-            .help(vm.isArabic ? "افتح هيرميس ديسكتوب (سياق كامل + اختيار المودل)" : "Open Hermes Desktop (full context + model choice)")
+            .help(vm.isArabic ? "افتح هيرميس ديسكتوب" : "Open Hermes Desktop")
 
             Button(action: { vm.send() }) {
                 Image(systemName: "arrow.up.circle.fill")
@@ -450,6 +492,25 @@ struct AskView: View {
                 .lineLimit(1)
 
             Spacer()
+        }
+    }
+
+    private var pinIcon: String {
+        switch vm.pinMode {
+        case .off: return "pin"
+        case .absolute: return "pin.fill"
+        case .scoped: return "bell.fill"
+        }
+    }
+
+    private var pinHelp: String {
+        switch vm.pinMode {
+        case .off:
+            return vm.isArabic ? "غير مثبّت — اضغط: تثبيت مطلق" : "Not pinned — click: pin everywhere"
+        case .absolute:
+            return vm.isArabic ? "مثبّت معك في كل مكان — اضغط: تثبيت خاص (يشعرك عند الانتهاء)" : "Pinned everywhere — click: scoped"
+        case .scoped:
+            return vm.isArabic ? "تثبيت خاص — يشتغل ويشعرك عند الانتهاء — اضغط: إلغاء" : "Scoped — notifies when done — click: off"
         }
     }
 
