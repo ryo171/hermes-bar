@@ -172,7 +172,6 @@ final class AskViewModel: ObservableObject {
     @Published var elapsed: TimeInterval = 0
     @Published var pinMode: PinMode = PinMode(rawValue: UserDefaults.standard.string(forKey: "hb.pinmode") ?? "off") ?? .off
     @Published var notifyWhenDone: Bool = UserDefaults.standard.bool(forKey: "hb.notify")
-    @Published var conciseMode: Bool = UserDefaults.standard.bool(forKey: "hb.concise")
     @Published var attachments: [AttachmentItem] = []
     @Published var mode: String = UserDefaults.standard.string(forKey: "hb.mode") ?? "fast"
     @Published var withScreenshot: Bool =
@@ -196,7 +195,6 @@ final class AskViewModel: ObservableObject {
     func setMode(_ m: String) { mode = m; UserDefaults.standard.set(m, forKey: "hb.mode") }
     func setWithScreenshot(_ on: Bool) { withScreenshot = on; UserDefaults.standard.set(on, forKey: "hb.withshot") }
     func toggleNotify() { notifyWhenDone.toggle(); UserDefaults.standard.set(notifyWhenDone, forKey: "hb.notify") }
-    func toggleConcise() { conciseMode.toggle(); UserDefaults.standard.set(conciseMode, forKey: "hb.concise") }
 
     func cyclePinMode() {
         let next: PinMode = (pinMode == .off) ? .here : (pinMode == .here ? .everywhere : .off)
@@ -251,7 +249,6 @@ final class AskViewModel: ObservableObject {
         attachments = []
         let wantsShot = withScreenshot
         let ar = isArabic
-        let concise = conciseMode
         let fast = (mode == "fast")
         let effort = fast ? "low" : "high"
         let detail = "high"
@@ -273,10 +270,6 @@ final class AskViewModel: ObservableObject {
                 let label = ar ? "ملفات/مجلدات مرفقة (افتحها بأدواتك):" : "Attached files/folders (open with your tools):"
                 text += "\n\n" + label + "\n" + pathNotes.map { "- \($0)" }.joined(separator: "\n")
             }
-            if concise {
-                text += "\n\n" + (ar ? "(أجب باختصار قدر الإمكان.)" : "(Answer as concisely as possible.)")
-            }
-
             DispatchQueue.main.async {
                 self.hostForTurn = host
                 self.effortForTurn = effort
@@ -308,6 +301,27 @@ final class AskViewModel: ObservableObject {
         messages.append(ChatMessage(role: "assistant", text: ""))
         isLoading = true
         startTimer()
+        startStream()
+    }
+
+    // Condense the last answer into a short version (post-answer, so the full
+    // detailed reply is produced first and only summarized on demand).
+    func summarizeLast() {
+        guard !isLoading, !lastAssistantText.isEmpty else { return }
+        let ar = isArabic
+        errorText = ""
+        isLoading = true
+        startTimer()
+        hostForTurn = fastHost()
+        effortForTurn = "low"
+        let prompt = ar
+            ? "لخّص جوابك السابق باختصار شديد — النقاط الأساسية فقط، بدون مقدمات."
+            : "Summarize your previous answer very concisely — key points only, no preamble."
+        messages.append(ChatMessage(role: "user", text: prompt))
+        var convo: [[String: Any]] = []
+        for m in messages where !m.text.isEmpty { convo.append(["role": m.role, "content": m.text]) }
+        lastConversation = convo
+        messages.append(ChatMessage(role: "assistant", text: ""))
         startStream()
     }
 
@@ -457,7 +471,12 @@ final class AskPanelController: NSObject, NSWindowDelegate {
 
     func presentShowingResult() { present() }
 
-    func dismiss() { panel?.orderOut(nil) }
+    func dismiss() {
+        panel?.orderOut(nil)
+        // Closing an idle window resets to a fresh chat next time it opens.
+        // If a task is still running (e.g. notify-when-done), keep the thread.
+        if !viewModel.isLoading { viewModel.newChat() }
+    }
 
     func applyTheme() { viewModel.refreshFromSettings() }
 
@@ -548,7 +567,8 @@ struct AskView: View {
 
     private var controlRow: some View {
         HStack(spacing: 13) {
-            iconButton("square.and.pencil", active: false, help: ar ? "محادثة جديدة" : "New chat") { vm.newChat() }
+            iconButton("square.and.pencil", active: false, help: ar ? "محادثة جديدة (⌘N)" : "New chat (⌘N)") { vm.newChat() }
+                .keyboardShortcut("n", modifiers: .command)
             iconButton("paperclip", active: false, help: ar ? "إرفاق ملف أو صورة" : "Attach file or image") { openFilePicker() }
             iconButton("doc.text.magnifyingglass", active: false, help: ar ? "قراءة/فحص سريع (Scrapling)" : "Quick read (Scrapling)") { vm.applySpiderPrefix() }
             iconButton(vm.withScreenshot ? "eye.fill" : "eye.slash", active: vm.withScreenshot, help: ar ? "رؤية الشاشة" : "See screen") { vm.setWithScreenshot(!vm.withScreenshot) }
@@ -653,6 +673,7 @@ struct AskView: View {
             if last.contains("```") {
                 actionButton("curlybraces", ar ? "نسخ الكود" : "Copy code") { copyToPasteboard(extractCode(last)) }
             }
+            actionButton("text.badge.minus", ar ? "لخّص" : "Summarize") { vm.summarizeLast() }
             actionButton("arrow.clockwise", ar ? "إعادة توليد" : "Regenerate") { vm.regenerate() }
             Spacer()
             Text(timerText).font(.system(size: 11)).foregroundColor(t.textSecondary.opacity(0.8))
@@ -682,17 +703,6 @@ struct AskView: View {
                         .foregroundColor(selected ? t.textPrimary : t.textSecondary)
                 }.buttonStyle(.plain)
             }
-
-            Button(action: { vm.toggleConcise() }) {
-                Text(ar ? "مختصر" : "Brief")
-                    .font(.system(size: 12, weight: vm.conciseMode ? .bold : .regular))
-                    .padding(.horizontal, 12).padding(.vertical, 4)
-                    .background(Capsule().fill(vm.conciseMode ? t.accent.opacity(0.28) : Color.clear))
-                    .foregroundColor(vm.conciseMode ? t.textPrimary : t.textSecondary)
-            }
-            .buttonStyle(.plain)
-            .help(ar ? "رد مختصر (يبقى مفصّل لو مطفّي)" : "Concise reply")
-
             Text(modeHint).font(.system(size: 10)).foregroundColor(t.textSecondary.opacity(0.7)).lineLimit(1)
             Spacer()
         }
