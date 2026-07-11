@@ -7,3 +7,5 @@
 node_modules/
 webook-sniper/
 .DS_Store
+
+.playwright-mcp/
