@@ -7,6 +7,11 @@ import MarkdownUI
 
 enum PinMode: String { case off, here, everywhere }
 
+extension Notification.Name {
+    static let hbSpawnWindow   = Notification.Name("hb.spawnWindow")
+    static let hbPendingResult = Notification.Name("hb.pendingResult")
+}
+
 enum Notifier {
     static func requestAuth() {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
@@ -181,6 +186,7 @@ final class AskViewModel: ObservableObject {
     @Published var isArabic: Bool = Settings.shared.language == .arabic
 
     var onClose: (() -> Void)?
+    var onTaskFinishedNotify: (() -> Void)?   // fired when a notify-worthy task completes
 
     private var currentTask: Task<Void, Never>?
     private var timerCancellable: AnyCancellable?
@@ -355,6 +361,7 @@ final class AskViewModel: ObservableObject {
                 title: isArabic ? "هيرميس خلّص ✅" : "Hermes finished ✅",
                 body: summary.isEmpty ? (isArabic ? "تمّت المهمة" : "Task done") : summary
             )
+            onTaskFinishedNotify?()
         }
     }
 
@@ -420,6 +427,7 @@ final class AskPanelController: NSObject, NSWindowDelegate {
     private let viewModel = AskViewModel()
     private var cancellables = Set<AnyCancellable>()
     private let defaultSize = NSSize(width: 720, height: 520)
+    private var ignoreResignUntil: Date = .distantPast   // keeps the panel from flash-dismissing
 
     var isVisible: Bool { panel?.isVisible ?? false }
 
@@ -462,6 +470,10 @@ final class AskPanelController: NSObject, NSWindowDelegate {
     func present() {
         viewModel.refreshFromSettings()
         viewModel.onClose = { [weak self] in self?.dismiss() }
+        viewModel.onTaskFinishedNotify = { [weak self] in
+            guard let self = self else { return }
+            NotificationCenter.default.post(name: .hbPendingResult, object: self)
+        }
         ensurePanel()
         applyPinBehavior()
         position(panel!)
@@ -469,7 +481,12 @@ final class AskPanelController: NSObject, NSWindowDelegate {
         panel!.makeKeyAndOrderFront(nil)
     }
 
-    func presentShowingResult() { present() }
+    // Tapping the "done" notification lands here. Give the panel a brief grace
+    // period so it doesn't auto-dismiss while the previous app still holds focus.
+    func presentShowingResult() {
+        ignoreResignUntil = Date().addingTimeInterval(0.8)
+        present()
+    }
 
     func dismiss() {
         panel?.orderOut(nil)
@@ -481,6 +498,7 @@ final class AskPanelController: NSObject, NSWindowDelegate {
     func applyTheme() { viewModel.refreshFromSettings() }
 
     func windowDidResignKey(_ notification: Notification) {
+        if Date() < ignoreResignUntil { return }
         if viewModel.pinMode == .off {
             DispatchQueue.main.async { [weak self] in self?.dismiss() }
         }
@@ -574,6 +592,9 @@ struct AskView: View {
             iconButton(vm.withScreenshot ? "eye.fill" : "eye.slash", active: vm.withScreenshot, help: ar ? "رؤية الشاشة" : "See screen") { vm.setWithScreenshot(!vm.withScreenshot) }
             iconButton(pinIcon, active: vm.pinMode != .off, help: pinHelp) { vm.cyclePinMode() }
             iconButton(vm.notifyWhenDone ? "bell.fill" : "bell.slash", active: vm.notifyWhenDone, help: ar ? "أشعرني لما يخلّص" : "Notify when done") { vm.toggleNotify() }
+            iconButton("plus.rectangle.on.rectangle", active: false, help: ar ? "نافذة هيرميس جديدة (مستقلة)" : "New Hermes window (independent)") {
+                NotificationCenter.default.post(name: .hbSpawnWindow, object: nil)
+            }
             iconButton("macwindow.on.rectangle", active: false, help: ar ? "افتح هيرميس ديسكتوب" : "Open Hermes Desktop") { openHermesDesktop() }
 
             Spacer()

@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private let hotKey = GlobalHotKey()
     private var panelController: AskPanelController?
     private var extraPanels: [AskPanelController] = []
+    private weak var pendingResultController: AskPanelController?
     private var settingsWindow: SettingsWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -21,6 +22,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             name: Settings.didChangeNotification,
             object: nil
         )
+
+        // The panel's "new window" icon asks us to spawn an independent Hermes.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(spawnWindow),
+            name: .hbSpawnWindow, object: nil
+        )
+
+        // Remember which window finished a notify-worthy task, so tapping the
+        // notification brings *that* window forward (primary or a spawned one).
+        NotificationCenter.default.addObserver(
+            forName: .hbPendingResult, object: nil, queue: .main
+        ) { [weak self] note in
+            self?.pendingResultController = note.object as? AskPanelController
+        }
     }
 
     // MARK: - Main menu (standard editing shortcuts)
@@ -197,7 +212,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
-        panelController?.presentShowingResult()
+        (pendingResultController ?? panelController)?.presentShowingResult()
         completionHandler()
     }
 }
