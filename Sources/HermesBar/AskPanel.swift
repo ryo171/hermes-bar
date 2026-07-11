@@ -76,6 +76,7 @@ struct MultilineInput: NSViewRepresentable {
                     textView.insertNewline(nil)
                 } else {
                     parent.onSend()
+                    textView.selectAll(nil)   // next keystroke replaces the sent question
                 }
                 return true
             }
@@ -606,6 +607,7 @@ struct AskView: View {
                         .markdownBlockStyle(\.codeBlock) { configuration in
                             codeBlock(configuration)
                         }
+                        .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     if !vm.isLoading { answerActions }
                 }
@@ -660,7 +662,13 @@ struct AskView: View {
     }
 
     private var timerText: String {
-        String(format: "⏱ %.1f%@", vm.elapsed, ar ? " ث" : "s")
+        let total = Int(vm.elapsed)
+        if total >= 60 {
+            let m = total / 60
+            let s = total % 60
+            return ar ? "⏱ \(m) د \(s) ث" : "⏱ \(m)m \(s)s"
+        }
+        return String(format: "⏱ %.1f%@", vm.elapsed, ar ? " ث" : "s")
     }
 
     private var pinIcon: String {
