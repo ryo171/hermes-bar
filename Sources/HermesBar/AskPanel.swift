@@ -172,6 +172,7 @@ final class AskViewModel: ObservableObject {
     @Published var elapsed: TimeInterval = 0
     @Published var pinMode: PinMode = PinMode(rawValue: UserDefaults.standard.string(forKey: "hb.pinmode") ?? "off") ?? .off
     @Published var notifyWhenDone: Bool = UserDefaults.standard.bool(forKey: "hb.notify")
+    @Published var conciseMode: Bool = UserDefaults.standard.bool(forKey: "hb.concise")
     @Published var attachments: [AttachmentItem] = []
     @Published var mode: String = UserDefaults.standard.string(forKey: "hb.mode") ?? "fast"
     @Published var withScreenshot: Bool =
@@ -195,6 +196,7 @@ final class AskViewModel: ObservableObject {
     func setMode(_ m: String) { mode = m; UserDefaults.standard.set(m, forKey: "hb.mode") }
     func setWithScreenshot(_ on: Bool) { withScreenshot = on; UserDefaults.standard.set(on, forKey: "hb.withshot") }
     func toggleNotify() { notifyWhenDone.toggle(); UserDefaults.standard.set(notifyWhenDone, forKey: "hb.notify") }
+    func toggleConcise() { conciseMode.toggle(); UserDefaults.standard.set(conciseMode, forKey: "hb.concise") }
 
     func cyclePinMode() {
         let next: PinMode = (pinMode == .off) ? .here : (pinMode == .here ? .everywhere : .off)
@@ -249,6 +251,7 @@ final class AskViewModel: ObservableObject {
         attachments = []
         let wantsShot = withScreenshot
         let ar = isArabic
+        let concise = conciseMode
         let fast = (mode == "fast")
         let effort = fast ? "low" : "high"
         let detail = "high"
@@ -269,6 +272,9 @@ final class AskViewModel: ObservableObject {
             if !pathNotes.isEmpty {
                 let label = ar ? "ملفات/مجلدات مرفقة (افتحها بأدواتك):" : "Attached files/folders (open with your tools):"
                 text += "\n\n" + label + "\n" + pathNotes.map { "- \($0)" }.joined(separator: "\n")
+            }
+            if concise {
+                text += "\n\n" + (ar ? "(أجب باختصار قدر الإمكان.)" : "(Answer as concisely as possible.)")
             }
 
             DispatchQueue.main.async {
@@ -676,6 +682,17 @@ struct AskView: View {
                         .foregroundColor(selected ? t.textPrimary : t.textSecondary)
                 }.buttonStyle(.plain)
             }
+
+            Button(action: { vm.toggleConcise() }) {
+                Text(ar ? "مختصر" : "Brief")
+                    .font(.system(size: 12, weight: vm.conciseMode ? .bold : .regular))
+                    .padding(.horizontal, 12).padding(.vertical, 4)
+                    .background(Capsule().fill(vm.conciseMode ? t.accent.opacity(0.28) : Color.clear))
+                    .foregroundColor(vm.conciseMode ? t.textPrimary : t.textSecondary)
+            }
+            .buttonStyle(.plain)
+            .help(ar ? "رد مختصر (يبقى مفصّل لو مطفّي)" : "Concise reply")
+
             Text(modeHint).font(.system(size: 10)).foregroundColor(t.textSecondary.opacity(0.7)).lineLimit(1)
             Spacer()
         }
