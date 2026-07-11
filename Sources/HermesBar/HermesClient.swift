@@ -51,9 +51,19 @@ final class HermesClient {
             ])
         }
 
+        let systemPrompt = """
+        Format every answer in GitHub-Flavored Markdown. When you show tabular data, \
+        use a real Markdown table INCLUDING the header-separator row (e.g. | A | B |\\n|---|---|). \
+        Put all code and shell commands inside fenced code blocks (```lang ... ```). \
+        Use headings, bold, and lists where they improve clarity. Keep prose in Arabic if the user writes in Arabic.
+        """
+
         var payload: [String: Any] = [
             "model": "hermes-agent",
-            "messages": [["role": "user", "content": content]],
+            "messages": [
+                ["role": "system", "content": systemPrompt],
+                ["role": "user", "content": content]
+            ],
             "stream": stream
         ]
         if let effort = reasoningEffort, !effort.isEmpty {

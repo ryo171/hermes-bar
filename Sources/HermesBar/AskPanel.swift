@@ -30,26 +30,21 @@ struct MultilineInput: NSViewRepresentable {
     var onSend: () -> Void
 
     func makeNSView(context: Context) -> NSScrollView {
-        let tv = NSTextView()
+        let scroll = NSTextView.scrollableTextView()
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = false
+        scroll.borderType = .noBorder
+        guard let tv = scroll.documentView as? NSTextView else { return scroll }
         tv.delegate = context.coordinator
         tv.isRichText = false
+        tv.drawsBackground = false
         tv.font = .systemFont(ofSize: 16)
         tv.textColor = textColor
         tv.insertionPointColor = textColor
         tv.typingAttributes = [.foregroundColor: textColor, .font: NSFont.systemFont(ofSize: 16)]
-        tv.drawsBackground = false
-        tv.isVerticallyResizable = true
-        tv.isHorizontallyResizable = false
         tv.textContainerInset = NSSize(width: 0, height: 2)
-        tv.textContainer?.widthTracksTextView = true
         tv.string = text
         context.coordinator.textView = tv
-
-        let scroll = NSScrollView()
-        scroll.documentView = tv
-        scroll.drawsBackground = false
-        scroll.hasVerticalScroller = false
-        scroll.borderType = .noBorder
         DispatchQueue.main.async { tv.window?.makeFirstResponder(tv) }
         return scroll
     }
