@@ -1,9 +1,8 @@
 import Foundation
 
 // Talks to the local Hermes API server (`hermes gateway`) using the
-// OpenAI-compatible /v1/chat/completions endpoint. Supports inline images,
-// per-image detail, a reasoning-effort level, a host override (for Fast/Quality
-// profiles), and streaming.
+// OpenAI-compatible /v1/chat/completions endpoint. Sends the FULL conversation
+// each turn (so Hermes has context), streams the reply, and can be cancelled.
 final class HermesClient {
     static let shared = HermesClient()
 
@@ -35,21 +34,13 @@ final class HermesClient {
         }.resume()
     }
 
+    // `conversation` is the full array of user/assistant turns. The last user
+    // turn's content may be a multimodal array (text + image_url parts).
     private func makeRequest(host: String,
-                             question: String,
-                             imageDataURLs: [String],
-                             imageDetail: String,
+                             conversation: [[String: Any]],
                              reasoningEffort: String?,
                              stream: Bool) -> URLRequest? {
         guard let url = URL(string: "\(host)/v1/chat/completions") else { return nil }
-
-        var content: [[String: Any]] = [["type": "text", "text": question]]
-        for durl in imageDataURLs {
-            content.append([
-                "type": "image_url",
-                "image_url": ["url": durl, "detail": imageDetail]
-            ])
-        }
 
         let systemPrompt = """
         Format every answer as a rich GitHub-Flavored Markdown message:
@@ -61,12 +52,12 @@ final class HermesClient {
         - Keep prose in Arabic when the user writes in Arabic.
         """
 
+        var messages: [[String: Any]] = [["role": "system", "content": systemPrompt]]
+        messages.append(contentsOf: conversation)
+
         var payload: [String: Any] = [
             "model": "hermes-agent",
-            "messages": [
-                ["role": "system", "content": systemPrompt],
-                ["role": "user", "content": content]
-            ],
+            "messages": messages,
             "stream": stream
         ]
         if let effort = reasoningEffort, !effort.isEmpty {
@@ -83,21 +74,16 @@ final class HermesClient {
         return req
     }
 
-    // Returns the streaming Task so the caller can cancel it (Stop button).
     @discardableResult
     func askStream(host: String? = nil,
-                   question: String,
-                   imageDataURLs: [String] = [],
-                   imageDetail: String = "high",
+                   conversation: [[String: Any]],
                    reasoningEffort: String? = nil,
                    onDelta: @escaping (String) -> Void,
                    onDone: @escaping (Error?) -> Void) -> Task<Void, Never> {
 
         let useHost = host ?? Settings.shared.host
         guard let req = makeRequest(host: useHost,
-                                    question: question,
-                                    imageDataURLs: imageDataURLs,
-                                    imageDetail: imageDetail,
+                                    conversation: conversation,
                                     reasoningEffort: reasoningEffort,
                                     stream: true) else {
             DispatchQueue.main.async { onDone(ClientError.notReachable) }

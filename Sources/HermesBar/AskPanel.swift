@@ -5,7 +5,6 @@ import UniformTypeIdentifiers
 import UserNotifications
 import MarkdownUI
 
-// off = Spotlight (click-away closes) · here = stays in place · everywhere = follows you
 enum PinMode: String { case off, here, everywhere }
 
 enum Notifier {
@@ -20,6 +19,12 @@ enum Notifier {
         let req = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(req)
     }
+}
+
+struct ChatMessage: Identifiable, Equatable {
+    let id = UUID()
+    let role: String   // "user" or "assistant"
+    var text: String
 }
 
 // MARK: - Multiline input (Enter = send, Shift+Enter = newline)
@@ -76,7 +81,7 @@ struct MultilineInput: NSViewRepresentable {
                     textView.insertNewline(nil)
                 } else {
                     parent.onSend()
-                    textView.selectAll(nil)   // next keystroke replaces the sent question
+                    textView.selectAll(nil)
                 }
                 return true
             }
@@ -161,7 +166,7 @@ final class FloatingPanel: NSPanel {
 
 final class AskViewModel: ObservableObject {
     @Published var input: String = ""
-    @Published var response: String = ""
+    @Published var messages: [ChatMessage] = []
     @Published var errorText: String = ""
     @Published var isLoading: Bool = false
     @Published var elapsed: TimeInterval = 0
@@ -180,26 +185,16 @@ final class AskViewModel: ObservableObject {
     private var currentTask: Task<Void, Never>?
     private var timerCancellable: AnyCancellable?
     private var startDate: Date?
-    private var lastText = ""
-    private var lastImages: [String] = []
-    private var lastHost = ""
-    private var lastDetail = "high"
-    private var lastEffort = "low"
+    private var lastConversation: [[String: Any]] = []
+    private var hostForTurn = ""
+    private var effortForTurn = "low"
+    private var noteFilename: String?
 
-    func setMode(_ m: String) {
-        mode = m
-        UserDefaults.standard.set(m, forKey: "hb.mode")
-    }
+    // MARK: settings toggles
 
-    private func fastHost() -> String {
-        let h = UserDefaults.standard.string(forKey: "hb.fasthost") ?? ""
-        return h.isEmpty ? Settings.shared.host : h
-    }
-
-    func setWithScreenshot(_ on: Bool) {
-        withScreenshot = on
-        UserDefaults.standard.set(on, forKey: "hb.withshot")
-    }
+    func setMode(_ m: String) { mode = m; UserDefaults.standard.set(m, forKey: "hb.mode") }
+    func setWithScreenshot(_ on: Bool) { withScreenshot = on; UserDefaults.standard.set(on, forKey: "hb.withshot") }
+    func toggleNotify() { notifyWhenDone.toggle(); UserDefaults.standard.set(notifyWhenDone, forKey: "hb.notify") }
 
     func cyclePinMode() {
         let next: PinMode = (pinMode == .off) ? .here : (pinMode == .here ? .everywhere : .off)
@@ -207,9 +202,9 @@ final class AskViewModel: ObservableObject {
         UserDefaults.standard.set(next.rawValue, forKey: "hb.pinmode")
     }
 
-    func toggleNotify() {
-        notifyWhenDone.toggle()
-        UserDefaults.standard.set(notifyWhenDone, forKey: "hb.notify")
+    private func fastHost() -> String {
+        let h = UserDefaults.standard.string(forKey: "hb.fasthost") ?? ""
+        return h.isEmpty ? Settings.shared.host : h
     }
 
     func applySpiderPrefix() {
@@ -220,37 +215,34 @@ final class AskViewModel: ObservableObject {
     }
 
     func addAttachment(_ url: URL) {
-        if !attachments.contains(where: { $0.url == url }) {
-            attachments.append(AttachmentItem(url: url))
-        }
+        if !attachments.contains(where: { $0.url == url }) { attachments.append(AttachmentItem(url: url)) }
     }
-
-    func removeAttachment(_ item: AttachmentItem) {
-        attachments.removeAll { $0.id == item.id }
-    }
+    func removeAttachment(_ item: AttachmentItem) { attachments.removeAll { $0.id == item.id } }
 
     func refreshFromSettings() {
         theme = Settings.shared.theme
         isArabic = Settings.shared.language == .arabic
     }
 
-    func reset() {
+    // MARK: conversation
+
+    func newChat() {
+        archiveToObsidian()
         stop()
+        messages = []
         input = ""
-        response = ""
         errorText = ""
-        isLoading = false
         elapsed = 0
-        attachments = []
-        refreshFromSettings()
+        noteFilename = nil
     }
+
+    var lastAssistantText: String { messages.last(where: { $0.role == "assistant" })?.text ?? "" }
 
     func send() {
         let q0 = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard (!q0.isEmpty || !attachments.isEmpty), !isLoading else { return }
-        isLoading = true
         errorText = ""
-        response = ""
+        isLoading = true
         startTimer()
 
         let atts = attachments
@@ -269,63 +261,76 @@ final class AskViewModel: ObservableObject {
             }
             var pathNotes: [String] = []
             for a in atts {
-                if a.isImage, let durl = imageDataURL(for: a.url) {
-                    images.append(durl)
-                } else {
-                    pathNotes.append(a.url.path)
-                }
+                if a.isImage, let durl = imageDataURL(for: a.url) { images.append(durl) }
+                else { pathNotes.append(a.url.path) }
             }
             var text = q0
-            if text.isEmpty {
-                text = ar ? "شوف المرفقات وساعدني." : "Take a look at the attachment(s) and help me."
-            }
+            if text.isEmpty { text = ar ? "شوف المرفقات وساعدني." : "Take a look at the attachment(s) and help me." }
             if !pathNotes.isEmpty {
-                let label = ar
-                    ? "ملفات/مجلدات مرفقة (افتحها بأدواتك):"
-                    : "Attached files/folders (open them with your tools):"
+                let label = ar ? "ملفات/مجلدات مرفقة (افتحها بأدواتك):" : "Attached files/folders (open with your tools):"
                 text += "\n\n" + label + "\n" + pathNotes.map { "- \($0)" }.joined(separator: "\n")
             }
+
             DispatchQueue.main.async {
-                self.lastText = text; self.lastImages = images
-                self.lastHost = host; self.lastDetail = detail; self.lastEffort = effort
-                self.launch()
+                self.hostForTurn = host
+                self.effortForTurn = effort
+                self.messages.append(ChatMessage(role: "user", text: text))
+
+                var convo: [[String: Any]] = []
+                for (i, m) in self.messages.enumerated() {
+                    if i == self.messages.count - 1, !images.isEmpty {
+                        var content: [[String: Any]] = [["type": "text", "text": m.text]]
+                        for durl in images {
+                            content.append(["type": "image_url", "image_url": ["url": durl, "detail": detail]])
+                        }
+                        convo.append(["role": m.role, "content": content])
+                    } else {
+                        convo.append(["role": m.role, "content": m.text])
+                    }
+                }
+                self.lastConversation = convo
+                self.messages.append(ChatMessage(role: "assistant", text: ""))
+                self.startStream()
             }
         }
     }
 
     func regenerate() {
-        guard !isLoading, !lastText.isEmpty else { return }
-        isLoading = true
+        guard !isLoading, !lastConversation.isEmpty else { return }
         errorText = ""
-        response = ""
+        if messages.last?.role == "assistant" { messages.removeLast() }
+        messages.append(ChatMessage(role: "assistant", text: ""))
+        isLoading = true
         startTimer()
-        launch()
+        startStream()
     }
 
-    private func launch() {
+    private func startStream() {
+        guard let assistantId = messages.last(where: { $0.role == "assistant" })?.id else { return }
         currentTask = HermesClient.shared.askStream(
-            host: lastHost,
-            question: lastText,
-            imageDataURLs: lastImages,
-            imageDetail: lastDetail,
-            reasoningEffort: lastEffort,
+            host: hostForTurn,
+            conversation: lastConversation,
+            reasoningEffort: effortForTurn,
             onDelta: { [weak self] (piece: String) in
-                self?.response += piece
+                guard let self = self, let i = self.messages.firstIndex(where: { $0.id == assistantId }) else { return }
+                self.messages[i].text += piece
             },
             onDone: { [weak self] (err: Error?) in
-                self?.finish(err)
+                self?.finish(err, assistantId: assistantId)
             }
         )
     }
 
-    private func finish(_ err: Error?) {
+    private func finish(_ err: Error?, assistantId: UUID) {
         isLoading = false
         stopTimer()
-        if let err = err, response.isEmpty {
+        if let err = err, let i = messages.firstIndex(where: { $0.id == assistantId }), messages[i].text.isEmpty {
             errorText = err.localizedDescription
+            messages.remove(at: i)
         }
+        archiveToObsidian()
         if notifyWhenDone {
-            let summary = errorText.isEmpty ? String(response.prefix(120)) : errorText
+            let summary = errorText.isEmpty ? String(lastAssistantText.prefix(120)) : errorText
             Notifier.notify(
                 title: isArabic ? "هيرميس خلّص ✅" : "Hermes finished ✅",
                 body: summary.isEmpty ? (isArabic ? "تمّت المهمة" : "Task done") : summary
@@ -355,6 +360,37 @@ final class AskViewModel: ObservableObject {
         timerCancellable = nil
         if let s = startDate { elapsed = Date().timeIntervalSince(s) }
     }
+
+    // MARK: Obsidian archive
+
+    func archiveToObsidian() {
+        let vault = UserDefaults.standard.string(forKey: "hb.obsidian") ?? ""
+        guard !vault.isEmpty, messages.contains(where: { !$0.text.isEmpty }) else { return }
+
+        let dir = (vault as NSString).appendingPathComponent("HermesBar")
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+
+        let firstQ = messages.first(where: { $0.role == "user" })?.text ?? "conversation"
+        if noteFilename == nil {
+            let slug = String(firstQ.prefix(40))
+                .replacingOccurrences(of: "/", with: "-")
+                .replacingOccurrences(of: "\n", with: " ")
+                .trimmingCharacters(in: .whitespaces)
+            let df = DateFormatter(); df.dateFormat = "yyyy-MM-dd HHmm"
+            noteFilename = "\(df.string(from: Date())) \(slug).md"
+        }
+        guard let name = noteFilename else { return }
+
+        var md = "# \(String(firstQ.prefix(60)))\n\n"
+        let df = DateFormatter(); df.dateStyle = .medium; df.timeStyle = .short
+        md += "> \(df.string(from: Date())) · HermesBar\n\n"
+        for m in messages where !m.text.isEmpty {
+            let who = m.role == "user" ? "🙋 " + (isArabic ? "أنت" : "You") : "🤖 Hermes"
+            md += "## \(who)\n\n\(m.text)\n\n"
+        }
+        let path = (dir as NSString).appendingPathComponent(name)
+        try? md.write(toFile: path, atomically: true, encoding: .utf8)
+    }
 }
 
 // MARK: - Panel controller
@@ -363,7 +399,7 @@ final class AskPanelController: NSObject, NSWindowDelegate {
     private var panel: FloatingPanel?
     private let viewModel = AskViewModel()
     private var cancellables = Set<AnyCancellable>()
-    private let defaultSize = NSSize(width: 720, height: 500)
+    private let defaultSize = NSSize(width: 720, height: 520)
 
     var isVisible: Bool { panel?.isVisible ?? false }
 
@@ -404,7 +440,7 @@ final class AskPanelController: NSObject, NSWindowDelegate {
     }
 
     func present() {
-        viewModel.reset()
+        viewModel.refreshFromSettings()
         viewModel.onClose = { [weak self] in self?.dismiss() }
         ensurePanel()
         applyPinBehavior()
@@ -413,14 +449,7 @@ final class AskPanelController: NSObject, NSWindowDelegate {
         panel!.makeKeyAndOrderFront(nil)
     }
 
-    func presentShowingResult() {
-        viewModel.onClose = { [weak self] in self?.dismiss() }
-        ensurePanel()
-        applyPinBehavior()
-        position(panel!)
-        NSApp.activate(ignoringOtherApps: true)
-        panel!.makeKeyAndOrderFront(nil)
-    }
+    func presentShowingResult() { present() }
 
     func dismiss() { panel?.orderOut(nil) }
 
@@ -439,8 +468,7 @@ final class AskPanelController: NSObject, NSWindowDelegate {
     }
 
     private func position(_ panel: NSPanel) {
-        let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }
-            ?? NSScreen.main
+        let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main
         guard let visible = screen?.visibleFrame else { return }
         let size = panel.frame.size
         let x = visible.midX - size.width / 2
@@ -473,9 +501,7 @@ struct AskView: View {
         .overlay(dropHighlight)
         .environment(\.layoutDirection, ar ? .rightToLeft : .leftToRight)
         .onExitCommand { vm.onClose?() }
-        .onDrop(of: [UTType.fileURL], isTargeted: $dropTargeted) { providers in
-            handleDrop(providers)
-        }
+        .onDrop(of: [UTType.fileURL], isTargeted: $dropTargeted) { providers in handleDrop(providers) }
     }
 
     @ViewBuilder private var background: some View {
@@ -493,8 +519,7 @@ struct AskView: View {
 
     @ViewBuilder private var dropHighlight: some View {
         if dropTargeted {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .strokeBorder(t.accent, lineWidth: 2)
+            RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(t.accent, lineWidth: 2)
         }
     }
 
@@ -504,17 +529,10 @@ struct AskView: View {
 
     private var inputField: some View {
         HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "sparkles")
-                .foregroundColor(t.accent)
-                .font(.system(size: 16, weight: .semibold))
-                .padding(.top, 3)
+            Image(systemName: "sparkles").foregroundColor(t.accent).font(.system(size: 16, weight: .semibold)).padding(.top, 3)
             ZStack(alignment: .topLeading) {
                 if vm.input.isEmpty {
-                    Text(placeholder)
-                        .foregroundColor(t.textSecondary)
-                        .font(.system(size: 16))
-                        .padding(.top, 2)
-                        .allowsHitTesting(false)
+                    Text(placeholder).foregroundColor(t.textSecondary).font(.system(size: 16)).padding(.top, 2).allowsHitTesting(false)
                 }
                 MultilineInput(text: $vm.input, textColor: NSColor(t.textPrimary), onSend: { vm.send() })
                     .frame(minHeight: 22, maxHeight: 100)
@@ -523,9 +541,10 @@ struct AskView: View {
     }
 
     private var controlRow: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 13) {
+            iconButton("square.and.pencil", active: false, help: ar ? "محادثة جديدة" : "New chat") { vm.newChat() }
             iconButton("paperclip", active: false, help: ar ? "إرفاق ملف أو صورة" : "Attach file or image") { openFilePicker() }
-            iconButton("doc.text.magnifyingglass", active: false, help: ar ? "قراءة/فحص سريع للصفحة (Scrapling)" : "Quick read/scrape (Scrapling)") { vm.applySpiderPrefix() }
+            iconButton("doc.text.magnifyingglass", active: false, help: ar ? "قراءة/فحص سريع (Scrapling)" : "Quick read (Scrapling)") { vm.applySpiderPrefix() }
             iconButton(vm.withScreenshot ? "eye.fill" : "eye.slash", active: vm.withScreenshot, help: ar ? "رؤية الشاشة" : "See screen") { vm.setWithScreenshot(!vm.withScreenshot) }
             iconButton(pinIcon, active: vm.pinMode != .off, help: pinHelp) { vm.cyclePinMode() }
             iconButton(vm.notifyWhenDone ? "bell.fill" : "bell.slash", active: vm.notifyWhenDone, help: ar ? "أشعرني لما يخلّص" : "Notify when done") { vm.toggleNotify() }
@@ -535,32 +554,21 @@ struct AskView: View {
 
             if vm.isLoading {
                 Button(action: { vm.stop() }) {
-                    Image(systemName: "stop.circle.fill")
-                        .font(.system(size: 22))
-                        .foregroundColor(.red)
-                }
-                .buttonStyle(.plain)
-                .help(ar ? "إيقاف" : "Stop")
+                    Image(systemName: "stop.circle.fill").font(.system(size: 22)).foregroundColor(.red)
+                }.buttonStyle(.plain).help(ar ? "إيقاف" : "Stop")
             } else {
                 Button(action: { vm.send() }) {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: 22))
+                    Image(systemName: "arrow.up.circle.fill").font(.system(size: 22))
                         .foregroundColor(canSend ? t.accent : t.textSecondary.opacity(0.4))
-                }
-                .buttonStyle(.plain)
-                .disabled(!canSend)
+                }.buttonStyle(.plain).disabled(!canSend)
             }
         }
     }
 
     private func iconButton(_ name: String, active: Bool, help: String, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: name)
-                .font(.system(size: 15))
-                .foregroundColor(active ? t.accent : t.textSecondary)
-        }
-        .buttonStyle(.plain)
-        .help(help)
+            Image(systemName: name).font(.system(size: 15)).foregroundColor(active ? t.accent : t.textSecondary)
+        }.buttonStyle(.plain).help(help)
     }
 
     private var canSend: Bool {
@@ -576,8 +584,7 @@ struct AskView: View {
                         Text(att.name).font(.system(size: 12)).foregroundColor(t.textPrimary).lineLimit(1)
                         Button(action: { vm.removeAttachment(att) }) {
                             Image(systemName: "xmark.circle.fill").font(.system(size: 12)).foregroundColor(t.textSecondary)
-                        }
-                        .buttonStyle(.plain)
+                        }.buttonStyle(.plain)
                     }
                     .padding(.horizontal, 8).padding(.vertical, 4)
                     .background(Capsule().fill(t.surface))
@@ -589,27 +596,22 @@ struct AskView: View {
 
     private var contentArea: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 10) {
-                if vm.isLoading {
+            VStack(alignment: .leading, spacing: 12) {
+                ForEach(vm.messages) { msg in
+                    messageView(msg)
+                }
+                if vm.isLoading, (vm.messages.last?.text.isEmpty ?? false) {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
                         Text((ar ? "هيرميس يشتغل… " : "Working… ") + timerText)
-                            .font(.system(size: 13))
-                            .foregroundColor(t.textSecondary)
+                            .font(.system(size: 13)).foregroundColor(t.textSecondary)
                     }
                 }
                 if !vm.errorText.isEmpty {
                     Text(vm.errorText).font(.system(size: 14)).foregroundColor(.red).textSelection(.enabled)
                 }
-                if !vm.response.isEmpty {
-                    Markdown(vm.response)
-                        .markdownTextStyle { ForegroundColor(t.textPrimary); FontSize(16) }
-                        .markdownBlockStyle(\.codeBlock) { configuration in
-                            codeBlock(configuration)
-                        }
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    if !vm.isLoading { answerActions }
+                if !vm.isLoading, !vm.lastAssistantText.isEmpty {
+                    answerActions
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -618,11 +620,32 @@ struct AskView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
+    @ViewBuilder private func messageView(_ msg: ChatMessage) -> some View {
+        if msg.role == "user" {
+            HStack {
+                Spacer(minLength: 40)
+                Text(msg.text)
+                    .font(.system(size: 15))
+                    .foregroundColor(t.textPrimary)
+                    .textSelection(.enabled)
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(t.surface))
+            }
+        } else if !msg.text.isEmpty {
+            Markdown(msg.text)
+                .markdownTextStyle { ForegroundColor(t.textPrimary); FontSize(16) }
+                .markdownBlockStyle(\.codeBlock) { configuration in codeBlock(configuration) }
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
     private var answerActions: some View {
-        HStack(spacing: 14) {
-            actionButton("doc.on.doc", ar ? "نسخ الكل" : "Copy all") { copyToPasteboard(vm.response) }
-            if vm.response.contains("```") {
-                actionButton("curlybraces", ar ? "نسخ الكود" : "Copy code") { copyToPasteboard(extractCode(vm.response)) }
+        let last = vm.lastAssistantText
+        return HStack(spacing: 14) {
+            actionButton("doc.on.doc", ar ? "نسخ" : "Copy") { copyToPasteboard(last) }
+            if last.contains("```") {
+                actionButton("curlybraces", ar ? "نسخ الكود" : "Copy code") { copyToPasteboard(extractCode(last)) }
             }
             actionButton("arrow.clockwise", ar ? "إعادة توليد" : "Regenerate") { vm.regenerate() }
             Spacer()
@@ -636,10 +659,8 @@ struct AskView: View {
             HStack(spacing: 4) {
                 Image(systemName: icon).font(.system(size: 12))
                 Text(label).font(.system(size: 11))
-            }
-            .foregroundColor(t.textSecondary)
-        }
-        .buttonStyle(.plain)
+            }.foregroundColor(t.textSecondary)
+        }.buttonStyle(.plain)
     }
 
     private var modeBar: some View {
@@ -653,8 +674,7 @@ struct AskView: View {
                         .padding(.horizontal, 12).padding(.vertical, 4)
                         .background(Capsule().fill(selected ? t.accent.opacity(0.28) : Color.clear))
                         .foregroundColor(selected ? t.textPrimary : t.textSecondary)
-                }
-                .buttonStyle(.plain)
+                }.buttonStyle(.plain)
             }
             Text(modeHint).font(.system(size: 10)).foregroundColor(t.textSecondary.opacity(0.7)).lineLimit(1)
             Spacer()
@@ -664,8 +684,7 @@ struct AskView: View {
     private var timerText: String {
         let total = Int(vm.elapsed)
         if total >= 60 {
-            let m = total / 60
-            let s = total % 60
+            let m = total / 60, s = total % 60
             return ar ? "⏱ \(m) د \(s) ث" : "⏱ \(m)m \(s)s"
         }
         return String(format: "⏱ %.1f%@", vm.elapsed, ar ? " ث" : "s")
@@ -696,7 +715,7 @@ struct AskView: View {
         vm.mode == "fast" ? (ar ? "أسرع · تفكير أقل" : "faster") : (ar ? "أعمق · تفكير أعلى" : "deeper")
     }
 
-    // MARK: - Helpers
+    // MARK: helpers
 
     private func copyToPasteboard(_ s: String) {
         let pb = NSPasteboard.general
@@ -704,32 +723,21 @@ struct AskView: View {
         pb.setString(s, forType: .string)
     }
 
-    // Styled code block with a per-block copy button (kept left-to-right).
     private func codeBlock(_ configuration: CodeBlockConfiguration) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text((configuration.language?.isEmpty == false ? configuration.language! : "code"))
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundColor(t.textSecondary)
+                Text(configuration.language?.isEmpty == false ? configuration.language! : "code")
+                    .font(.system(size: 10, weight: .medium, design: .monospaced)).foregroundColor(t.textSecondary)
                 Spacer()
                 Button(action: { copyToPasteboard(configuration.content) }) {
-                    Image(systemName: "doc.on.doc")
-                        .font(.system(size: 11))
-                        .foregroundColor(t.textSecondary)
-                }
-                .buttonStyle(.plain)
-                .help(ar ? "نسخ الكود" : "Copy code")
+                    Image(systemName: "doc.on.doc").font(.system(size: 11)).foregroundColor(t.textSecondary)
+                }.buttonStyle(.plain).help(ar ? "نسخ الكود" : "Copy code")
             }
-            .padding(.horizontal, 10)
-            .padding(.top, 6)
+            .padding(.horizontal, 10).padding(.top, 6)
 
             ScrollView(.horizontal, showsIndicators: false) {
                 configuration.label
-                    .markdownTextStyle {
-                        FontFamilyVariant(.monospaced)
-                        FontSize(13)
-                        ForegroundColor(t.textPrimary)
-                    }
+                    .markdownTextStyle { FontFamilyVariant(.monospaced); FontSize(13); ForegroundColor(t.textPrimary) }
                     .padding(10)
             }
         }
@@ -745,9 +753,7 @@ struct AskView: View {
         var i = 1
         while i < parts.count {
             var block = parts[i]
-            if let nl = block.firstIndex(of: "\n") {
-                block = String(block[block.index(after: nl)...])
-            }
+            if let nl = block.firstIndex(of: "\n") { block = String(block[block.index(after: nl)...]) }
             let trimmed = block.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty { blocks.append(trimmed) }
             i += 2
@@ -769,9 +775,7 @@ struct AskView: View {
         panel.canChooseFiles = true
         panel.canChooseDirectories = true
         panel.begin { resp in
-            if resp == .OK {
-                for url in panel.urls { vm.addAttachment(url) }
-            }
+            if resp == .OK { for url in panel.urls { vm.addAttachment(url) } }
         }
     }
 
