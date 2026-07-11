@@ -52,10 +52,13 @@ final class HermesClient {
         }
 
         let systemPrompt = """
-        Format every answer in GitHub-Flavored Markdown. When you show tabular data, \
-        use a real Markdown table INCLUDING the header-separator row (e.g. | A | B |\\n|---|---|). \
-        Put all code and shell commands inside fenced code blocks (```lang ... ```). \
-        Use headings, bold, and lists where they improve clarity. Keep prose in Arabic if the user writes in Arabic.
+        Format every answer as a rich GitHub-Flavored Markdown message:
+        - Start complex answers with a short ## heading and a one-line summary.
+        - For tabular data use a REAL Markdown table INCLUDING the header-separator row (| A | B |\\n|---|---|).
+        - For steps / to-dos use task checklists: "- [x] done item" and "- [ ] pending item".
+        - Put code and shell commands inside fenced code blocks (```lang ... ```).
+        - Use bold and lists where they improve clarity. Do NOT use raw HTML.
+        - Keep prose in Arabic when the user writes in Arabic.
         """
 
         var payload: [String: Any] = [

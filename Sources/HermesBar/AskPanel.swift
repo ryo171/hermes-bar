@@ -603,6 +603,9 @@ struct AskView: View {
                 if !vm.response.isEmpty {
                     Markdown(vm.response)
                         .markdownTextStyle { ForegroundColor(t.textPrimary); FontSize(16) }
+                        .markdownBlockStyle(\.codeBlock) { configuration in
+                            codeBlock(configuration)
+                        }
                         .frame(maxWidth: .infinity, alignment: .leading)
                     if !vm.isLoading { answerActions }
                 }
@@ -691,6 +694,41 @@ struct AskView: View {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(s, forType: .string)
+    }
+
+    // Styled code block with a per-block copy button (kept left-to-right).
+    private func codeBlock(_ configuration: CodeBlockConfiguration) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text((configuration.language?.isEmpty == false ? configuration.language! : "code"))
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundColor(t.textSecondary)
+                Spacer()
+                Button(action: { copyToPasteboard(configuration.content) }) {
+                    Image(systemName: "doc.on.doc")
+                        .font(.system(size: 11))
+                        .foregroundColor(t.textSecondary)
+                }
+                .buttonStyle(.plain)
+                .help(ar ? "نسخ الكود" : "Copy code")
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 6)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                configuration.label
+                    .markdownTextStyle {
+                        FontFamilyVariant(.monospaced)
+                        FontSize(13)
+                        ForegroundColor(t.textPrimary)
+                    }
+                    .padding(10)
+            }
+        }
+        .environment(\.layoutDirection, .leftToRight)
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(t.surface))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(t.textSecondary.opacity(0.15)))
+        .padding(.vertical, 4)
     }
 
     private func extractCode(_ md: String) -> String {
