@@ -1,3 +1,9 @@
 .build/
 *.app
 .DS_Store
+
+.build/
+*.app
+node_modules/
+webook-sniper/
+.DS_Store

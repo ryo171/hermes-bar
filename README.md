@@ -1,109 +1,123 @@
-# Hermes Bar (Swift)
+<div align="center">
 
-تطبيق ماك أصلي صغير يخلي هيرميس حاضر معك بأي مكان. تضغط اختصار، تطلع نافذة
-عائمة أنيقة (مثل Cowork)، ياخذ لقطة لشاشتك، يرسلها لهيرميس المحلي، ويرد.
+# HermesBar
 
-المميزات: نافذة عائمة فوق كل شي · عربي/RTL · اختصار قابل للتخصيص · ٦ ثيمات ·
-أيقونة هيرميس في الشريط · ربط مباشر بـ `localhost:8642`.
+**A fast, native macOS menu-bar companion for [Hermes Agent](https://github.com/NousResearch/hermes-agent).**
+Summon a floating, Spotlight-style panel from anywhere, ask about what's on your screen, and let Hermes act — with rich Markdown answers, themes, and full Arabic / RTL support.
+
+نافذة عائمة سريعة تخلّي هيرميس حاضر معك في أي مكان — تناديه باختصار، يشوف شاشتك، ويرد بتنسيق غني.
+
+[![Platform](https://img.shields.io/badge/platform-macOS%2013%2B-black?logo=apple)](#)
+[![Swift](https://img.shields.io/badge/Swift-5.9-orange?logo=swift)](#)
+[![Build](https://img.shields.io/badge/build-GitHub%20Actions-2088FF?logo=githubactions&logoColor=white)](#)
+[![License](https://img.shields.io/badge/license-MIT-green)](#license)
+
+<!-- Add a screenshot or GIF here — it makes the biggest difference:
+<img src="docs/demo.png" width="640" alt="HermesBar demo">
+-->
+
+</div>
 
 ---
 
-## المتطلبات
+## ✨ Why HermesBar
 
-- ماك macOS 13 أو أحدث.
-- أدوات Xcode للأوامر: `xcode-select --install`
-- هيرميس مثبّت وسيرفره شغّال (تحت).
+Hermes Agent is powerful, but it lives in a terminal. **HermesBar puts it one keystroke away** — a lightweight native panel that floats over everything, sees your screen when you want, and talks to your local Hermes gateway.
 
-## ١) فعّل سيرفر هيرميس (مرة وحدة)
+- 🪶 **Native & light** — pure Swift + AppKit/SwiftUI. No Electron, no WebView.
+- ⌨️ **Global hotkey** — summon it anywhere, Spotlight-style. Click away and it vanishes.
+- 👁️ **Screen vision** — attach a screenshot with one tap so Hermes sees your problem.
+- 🧩 **Rich Markdown** — real tables, styled code blocks with per-block copy, checklists.
+- 🌍 **Arabic-first** — full RTL, with an English mode too.
 
-أضف لملف `~/.hermes/.env`:
+## 🎯 Features
+
+| | |
+|---|---|
+| **Floating panel** | Borderless, resizable, always-on-top. Remembers its size. |
+| **Global hotkey** | Configurable (default ⌘⇧H). Toggle from anywhere. |
+| **Screen vision (👁️)** | Attach a live screenshot — turn off for faster text-only asks. |
+| **Attachments** | Pick or **drag-and-drop** files, images, and folders. |
+| **Fast ↔ Quality** | One switch trades reasoning depth for speed. |
+| **3-state pin** | Off (Spotlight) · Here (stays in place) · Everywhere (follows you). |
+| **Notify when done (🔔)** | Fire off a task, walk away, get a notification. |
+| **Rich answers** | Markdown tables, fenced code blocks + copy button, task checklists. |
+| **Answer actions** | Copy all · Copy code · Regenerate. Selectable text. |
+| **Response timer** | See exactly how long each answer took — compare models. |
+| **Themes** | 6 themes + a translucent **Glass** (macOS vibrancy) mode. |
+| **Open Hermes Desktop** | Jump to the full app for heavy, context-rich conversations. |
+| **Quick read (🔎)** | One-tap prompt starter for fast page reading. |
+
+## 📦 Requirements
+
+- **macOS 13+**
+- **[Hermes Agent](https://github.com/NousResearch/hermes-agent)** installed, with its API server enabled:
+  ```bash
+  # ~/.hermes/.env
+  API_SERVER_ENABLED=true
+  API_SERVER_KEY=change-me-local-dev
+  ```
+  Then run the gateway and keep it open:
+  ```bash
+  hermes gateway
+  ```
+
+## 🚀 Install
+
+### Option A — Download a build (recommended)
+
+Every push is built on a cloud Mac via GitHub Actions. Grab the latest `HermesBar-app` artifact from the [**Actions**](../../actions) tab, unzip it, then:
 
 ```bash
-API_SERVER_ENABLED=true
-API_SERVER_KEY=change-me-local-dev
+xattr -dr com.apple.quarantine ~/Downloads/HermesBar.app
+open ~/Downloads/HermesBar.app
 ```
 
-وشغّل الـ gateway وخلّه شغّال:
+### Option B — Build from source
+
+Requires the Xcode command-line tools (`xcode-select --install`).
 
 ```bash
-hermes gateway
-```
-
-لازم تشوف: `API server listening on http://127.0.0.1:8642`
-
-> التطبيق يقرأ `API_SERVER_KEY` تلقائياً من `~/.hermes/.env`، فما تحتاج تكتبه
-> بأي مكان ثاني (وتقدر تغيّره من الإعدادات لو حبيت).
-
-## ٢) ابنِ التطبيق
-
-من داخل مجلد `HermesBar`:
-
-```bash
-# للتجربة السريعة (يطلع في شريط القوائم مباشرة)
-swift run
-
-# أو ابنِ حزمة .app كاملة (مفضّل — عشان الأذونات تثبت)
-chmod +x make_app.sh
-./make_app.sh
+git clone https://github.com/ryo171/hermes-bar.git
+cd hermes-bar
+./make_app.sh          # builds and packages HermesBar.app
 open HermesBar.app
 ```
 
-## ٣) أذونات الماك (أول مرة بس)
+On first launch, grant **Screen Recording** and **Accessibility** in
+System Settings → Privacy & Security (needed for the screenshot and the global hotkey).
 
-- **Screen Recording** — عشان لقطة الشاشة.
-- **Accessibility** — عشان الاختصار العام يشتغل من أي مكان.
+## ⌨️ Usage
 
-المسار: System Settings ← Privacy & Security ← فعّل **HermesBar**.
-بعد التفعيل سكّر التطبيق وافتحه من جديد.
+- Press **⌘⇧H** anywhere → the panel appears.
+- Type your question (**Enter** sends, **Shift+Enter** for a new line).
+- Toggle **👁️** to include your screen, **🔔** to be notified when a long task finishes.
+- Open **Settings** from the menu-bar icon to pick your hotkey, theme, and language.
 
-## الاستخدام
-
-- اضغط **⌘⇧H** (الافتراضي) من أي مكان → تطلع النافذة، تكتب، Enter يرسل، Esc يقفل.
-- أو من أيقونة الشريط: «اسأل عن شاشتي» / «اسأل (نص فقط)» / «الإعدادات» / «فحص الاتصال».
-
-## الإعدادات
-
-من قائمة الأيقونة ← «الإعدادات»:
-
-- **اللغة**: عربي / إنجليزي.
-- **الثيم**: Hermes Teal · Midnight · Ember · Mono · Cyberpunk · Rosé.
-- **الاختصار**: اضغط «تسجيل» ثم اضغط أي تركيبة مفاتيح تبغاها.
-- **عنوان هيرميس**: الافتراضي `http://localhost:8642`.
-
-كلها تُحفظ في `~/.hermes/hermes-bar.json`.
-
-## يشتغل تلقائياً مع تشغيل الجهاز
-
-بما إنه تطبيق مستقل، خلّه يفتح مع بداية النظام:
-System Settings ← General ← Login Items ← أضف **HermesBar.app**.
-(خلّ `hermes gateway` يشتغل تلقائياً كمان عشان يكون جاهز.)
-
-## أيقونة هيرميس الحقيقية (اختياري)
-
-التطبيق يرسم علامة مجنّحة بسيطة افتراضياً. تبغى شعار هيرميس نفسه؟ حط صورة
-`hermes-menubar.png` (خلفية شفافة، أبيض/أسود، ~36×36) داخل مجلد `HermesBar`
-قبل ما تشغّل `make_app.sh`، أو في `~/.hermes/hermes-menubar.png`.
-
-## هيكل المشروع
+## 🧭 Architecture
 
 ```
-HermesBar/
-├── Package.swift
-├── make_app.sh
-└── Sources/HermesBar/
-    ├── main.swift            نقطة البداية
-    ├── AppDelegate.swift     أيقونة الشريط + القائمة + تسجيل الاختصار
-    ├── HermesIcon.swift      رسم/تحميل الأيقونة
-    ├── AskPanel.swift        النافذة العائمة (SwiftUI + NSPanel)
-    ├── SettingsWindow.swift  نافذة الإعدادات + مسجّل الاختصار
-    ├── Settings.swift        الحفظ/التحميل + مفتاح الـ API
-    ├── Theme.swift           الثيمات الستة
-    ├── GlobalHotKey.swift    اختصار عام عبر Carbon
-    ├── HermesClient.swift    الاتصال بـ /v1/chat/completions
-    └── Screenshot.swift      التقاط الشاشة
+┌──────────────┐    OpenAI-compatible     ┌──────────────────┐
+│  HermesBar   │  ── /v1/chat/completions ─▶│  Hermes gateway  │
+│ (Swift panel)│  ◀── streaming (SSE) ──────│  localhost:8642  │
+└──────────────┘                            └──────────────────┘
+   hotkey · vision · Markdown UI               your model + 30+ tools
 ```
 
-## ملاحظة
+HermesBar is a thin, native client. All intelligence and tools (terminal, files,
+browser, computer-use, web) come from your local Hermes agent.
 
-النسخة الحالية «تشوف وترد». التفاعل والتنفيذ (تشغيل أوامر/تعديل ملفات) جاهز
-أصلاً في هيرميس عبر أدواته، ونقدر نضيف العرض المباشر للخطوات (streaming) لاحقاً.
+## 🗺️ Roadmap
+
+- [ ] Conversation history + memory (with Obsidian archive)
+- [ ] Collapsible `<details>` sections in answers
+- [ ] Web change-monitor skill (notify on Telegram)
+- [ ] Multiple UI designs per theme
+
+## 🤝 Contributing
+
+Issues and PRs are welcome. Open an issue to discuss a feature before sending a large change.
+
+## 📄 License
+
+MIT © ryo171 — see [LICENSE](LICENSE).
