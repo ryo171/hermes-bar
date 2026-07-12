@@ -9,7 +9,9 @@ final class GlobalHotKey {
     private var eventHandler: EventHandlerRef?
     private var handler: (() -> Void)?
     private let signature: OSType = 0x484D4253   // 'HMBS'
-    private let id: UInt32 = 1
+    private let id: UInt32
+
+    init(id: UInt32 = 1) { self.id = id }
 
     func register(keyCode: UInt32, modifiers: UInt32, handler: @escaping () -> Void) {
         unregister()

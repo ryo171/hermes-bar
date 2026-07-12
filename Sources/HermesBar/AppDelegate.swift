@@ -3,7 +3,8 @@ import UserNotifications
 
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     private var statusItem: NSStatusItem!
-    private let hotKey = GlobalHotKey()
+    private let hotKey = GlobalHotKey(id: 1)
+    private let newWindowHotKey = GlobalHotKey(id: 2)
     private var panelController: AskPanelController?
     private var extraPanels: [AskPanelController] = []
     private weak var pendingResultController: AskPanelController?
@@ -46,9 +47,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let appItem = NSMenuItem()
         mainMenu.addItem(appItem)
         let appMenu = NSMenu()
+        // No key equivalent here — the configurable global hotkey handles it,
+        // and a matching menu shortcut would spawn two windows at once.
         let newWin = NSMenuItem(title: "New Hermes Window",
-                                action: #selector(spawnWindow), keyEquivalent: "n")
-        newWin.keyEquivalentModifierMask = [.command, .shift]
+                                action: #selector(spawnWindow), keyEquivalent: "")
         newWin.target = self
         appMenu.addItem(newWin)
         appMenu.addItem(.separator())
@@ -98,7 +100,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         askText.target = self
         menu.addItem(askText)
 
-        let newWindow = NSMenuItem(title: ar ? "نافذة جديدة (⌘⇧N)" : "New window (⌘⇧N)",
+        let winKey = Settings.shared.newWindowHotKey.displayString
+        let newWindow = NSMenuItem(title: (ar ? "نافذة جديدة" : "New window") + "  (\(winKey))",
                                    action: #selector(spawnWindow), keyEquivalent: "")
         newWindow.target = self
         menu.addItem(newWindow)
@@ -131,12 +134,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         hotKey.register(keyCode: combo.keyCode, modifiers: combo.carbonModifiers) { [weak self] in
             self?.togglePanel()
         }
+        let winCombo = Settings.shared.newWindowHotKey
+        newWindowHotKey.register(keyCode: winCombo.keyCode, modifiers: winCombo.carbonModifiers) { [weak self] in
+            self?.spawnWindow()
+        }
     }
 
     @objc private func settingsChanged() {
         rebuildMenu()
         registerHotKey()
+        statusItem.button?.image = HermesIcon.statusBarImage()
+        statusItem.button?.image?.isTemplate = true
         panelController?.applyTheme()
+        extraPanels.forEach { $0.applyTheme() }
     }
 
     // MARK: - Actions

@@ -47,6 +47,10 @@ final class Settings: Codable {
     var language: AppLanguage = .arabic
     var themeName: String = Theme.defaultTheme.name
     var hotKey: HotKeyCombo = .default
+    var newWindowHotKey: HotKeyCombo = HotKeyCombo(keyCode: UInt32(kVK_ANSI_N),
+                                                   cmd: true, shift: true, option: false, control: false)
+    var layoutName: String = "classic"
+    var iconStyle: String = "winged"
     var host: String = "http://localhost:8642"
     var apiKey: String = ""     // empty → resolved from ~/.hermes/.env at request time
     var captureFullScreen: Bool = true
@@ -63,7 +67,25 @@ final class Settings: Codable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case language, themeName, hotKey, host, apiKey, captureFullScreen
+        case language, themeName, hotKey, newWindowHotKey, layoutName, iconStyle, host, apiKey, captureFullScreen
+    }
+
+    init() {}
+
+    // Decode key-by-key so older config files (missing the newer fields) still
+    // load — a missing key falls back to its default instead of wiping settings.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        language = try c.decodeIfPresent(AppLanguage.self, forKey: .language) ?? .arabic
+        themeName = try c.decodeIfPresent(String.self, forKey: .themeName) ?? Theme.defaultTheme.name
+        hotKey = try c.decodeIfPresent(HotKeyCombo.self, forKey: .hotKey) ?? .default
+        newWindowHotKey = try c.decodeIfPresent(HotKeyCombo.self, forKey: .newWindowHotKey)
+            ?? HotKeyCombo(keyCode: UInt32(kVK_ANSI_N), cmd: true, shift: true, option: false, control: false)
+        layoutName = try c.decodeIfPresent(String.self, forKey: .layoutName) ?? "classic"
+        iconStyle = try c.decodeIfPresent(String.self, forKey: .iconStyle) ?? "winged"
+        host = try c.decodeIfPresent(String.self, forKey: .host) ?? "http://localhost:8642"
+        apiKey = try c.decodeIfPresent(String.self, forKey: .apiKey) ?? ""
+        captureFullScreen = try c.decodeIfPresent(Bool.self, forKey: .captureFullScreen) ?? true
     }
 
     static func load() -> Settings {

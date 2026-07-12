@@ -7,6 +7,18 @@ import MarkdownUI
 
 enum PinMode: String { case off, here, everywhere }
 
+enum PanelLayout: String, CaseIterable {
+    case classic, chat, rail, minimal
+    var label: String {
+        switch self {
+        case .classic: return "Classic"
+        case .chat:    return "Chat"
+        case .rail:    return "Rail"
+        case .minimal: return "Minimal"
+        }
+    }
+}
+
 extension Notification.Name {
     static let hbSpawnWindow   = Notification.Name("hb.spawnWindow")
     static let hbPendingResult = Notification.Name("hb.pendingResult")
@@ -174,6 +186,7 @@ final class AskViewModel: ObservableObject {
     @Published var messages: [ChatMessage] = []
     @Published var errorText: String = ""
     @Published var isLoading: Bool = false
+    @Published var streamingMessageId: UUID?   // the message currently being streamed (rendered as plain text)
     @Published var elapsed: TimeInterval = 0
     @Published var pinMode: PinMode = PinMode(rawValue: UserDefaults.standard.string(forKey: "hb.pinmode") ?? "off") ?? .off
     @Published var notifyWhenDone: Bool = UserDefaults.standard.bool(forKey: "hb.notify")
@@ -184,12 +197,15 @@ final class AskViewModel: ObservableObject {
 
     @Published var theme: Theme = Settings.shared.theme
     @Published var isArabic: Bool = Settings.shared.language == .arabic
+    @Published var layout: PanelLayout = PanelLayout(rawValue: Settings.shared.layoutName) ?? .classic
 
     var onClose: (() -> Void)?
     var onTaskFinishedNotify: (() -> Void)?   // fired when a notify-worthy task completes
 
     private var currentTask: Task<Void, Never>?
     private var timerCancellable: AnyCancellable?
+    private var pendingBuffer = ""                 // deltas awaiting a throttled flush
+    private var flushCancellable: AnyCancellable?
     private var startDate: Date?
     private var lastConversation: [[String: Any]] = []
     private var hostForTurn = ""
@@ -228,6 +244,7 @@ final class AskViewModel: ObservableObject {
     func refreshFromSettings() {
         theme = Settings.shared.theme
         isArabic = Settings.shared.language == .arabic
+        layout = PanelLayout(rawValue: Settings.shared.layoutName) ?? .classic
     }
 
     // MARK: conversation
@@ -333,13 +350,20 @@ final class AskViewModel: ObservableObject {
 
     private func startStream() {
         guard let assistantId = messages.last(where: { $0.role == "assistant" })?.id else { return }
+        // While streaming, the message is rendered as cheap plain text and tokens
+        // are coalesced on a ~90ms timer — re-parsing full Markdown on every token
+        // is what makes long answers choke the UI. We format once, at the end.
+        streamingMessageId = assistantId
+        pendingBuffer = ""
+        flushCancellable = Timer.publish(every: 0.09, on: .main, in: .common).autoconnect()
+            .sink { [weak self] _ in self?.flushPending() }
+
         currentTask = HermesClient.shared.askStream(
             host: hostForTurn,
             conversation: lastConversation,
             reasoningEffort: effortForTurn,
             onDelta: { [weak self] (piece: String) in
-                guard let self = self, let i = self.messages.firstIndex(where: { $0.id == assistantId }) else { return }
-                self.messages[i].text += piece
+                self?.pendingBuffer += piece
             },
             onDone: { [weak self] (err: Error?) in
                 self?.finish(err, assistantId: assistantId)
@@ -347,7 +371,23 @@ final class AskViewModel: ObservableObject {
         )
     }
 
+    private func flushPending() {
+        guard !pendingBuffer.isEmpty,
+              let id = streamingMessageId,
+              let i = messages.firstIndex(where: { $0.id == id }) else { return }
+        messages[i].text += pendingBuffer
+        pendingBuffer = ""
+    }
+
+    private func endStreaming() {
+        flushPending()
+        flushCancellable?.cancel()
+        flushCancellable = nil
+        streamingMessageId = nil   // triggers final full-Markdown render
+    }
+
     private func finish(_ err: Error?, assistantId: UUID) {
+        endStreaming()
         isLoading = false
         stopTimer()
         if let err = err, let i = messages.firstIndex(where: { $0.id == assistantId }), messages[i].text.isEmpty {
@@ -368,6 +408,7 @@ final class AskViewModel: ObservableObject {
     func stop() {
         currentTask?.cancel()
         currentTask = nil
+        endStreaming()
         isLoading = false
         stopTimer()
     }
@@ -375,7 +416,7 @@ final class AskViewModel: ObservableObject {
     private func startTimer() {
         startDate = Date()
         elapsed = 0
-        timerCancellable = Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()
+        timerCancellable = Timer.publish(every: 0.25, on: .main, in: .common).autoconnect()
             .sink { [weak self] _ in
                 guard let self = self, let s = self.startDate else { return }
                 self.elapsed = Date().timeIntervalSince(s)
@@ -525,11 +566,33 @@ final class AskPanelController: NSObject, NSWindowDelegate {
 struct AskView: View {
     @ObservedObject var vm: AskViewModel
     @State private var dropTargeted = false
+    @State private var showMinimalControls = false
 
     private var t: Theme { vm.theme }
     private var ar: Bool { vm.isArabic }
 
     var body: some View {
+        layoutBody
+            .padding(16)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(background)
+            .overlay(dropHighlight)
+            .environment(\.layoutDirection, ar ? .rightToLeft : .leftToRight)
+            .onExitCommand { vm.onClose?() }
+            .onDrop(of: [UTType.fileURL], isTargeted: $dropTargeted) { providers in handleDrop(providers) }
+    }
+
+    @ViewBuilder private var layoutBody: some View {
+        switch vm.layout {
+        case .classic: classicLayout
+        case .chat:    chatLayout
+        case .rail:    railLayout
+        case .minimal: minimalLayout
+        }
+    }
+
+    // Input on top, tools, thread, mode bar at the bottom (original).
+    private var classicLayout: some View {
         VStack(alignment: .leading, spacing: 8) {
             inputField
             controlRow
@@ -538,13 +601,47 @@ struct AskView: View {
             contentArea
             modeBar
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(background)
-        .overlay(dropHighlight)
-        .environment(\.layoutDirection, ar ? .rightToLeft : .leftToRight)
-        .onExitCommand { vm.onClose?() }
-        .onDrop(of: [UTType.fileURL], isTargeted: $dropTargeted) { providers in handleDrop(providers) }
+    }
+
+    // Thread fills the top, input pinned at the bottom (messenger style).
+    private var chatLayout: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            contentArea
+            Divider().opacity(0.15)
+            if !vm.attachments.isEmpty { attachmentsRow }
+            inputField
+            controlRow
+            modeBar
+        }
+    }
+
+    // Vertical icon rail on the side, thread + input in the main column.
+    private var railLayout: some View {
+        HStack(alignment: .top, spacing: 12) {
+            controlRail.padding(.top, 2)
+            Divider().opacity(0.15)
+            VStack(alignment: .leading, spacing: 8) {
+                inputField
+                if !vm.attachments.isEmpty { attachmentsRow }
+                Divider().opacity(0.15)
+                contentArea
+                modeBar
+            }
+        }
+    }
+
+    // Just input + answer; tools hidden behind an ellipsis popover.
+    private var minimalLayout: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 10) {
+                inputField
+                sendOrStop
+                minimalMenu
+            }
+            if !vm.attachments.isEmpty { attachmentsRow }
+            Divider().opacity(0.15)
+            contentArea
+        }
     }
 
     @ViewBuilder private var background: some View {
@@ -583,32 +680,63 @@ struct AskView: View {
         }
     }
 
+    // The row of tool icons, reused horizontally (classic/chat), vertically (rail),
+    // or inside a popover (minimal).
+    @ViewBuilder private var controlIcons: some View {
+        iconButton("square.and.pencil", active: false, help: ar ? "محادثة جديدة (⌘N)" : "New chat (⌘N)") { vm.newChat() }
+            .keyboardShortcut("n", modifiers: .command)
+        iconButton("paperclip", active: false, help: ar ? "إرفاق ملف أو صورة" : "Attach file or image") { openFilePicker() }
+        iconButton("doc.text.magnifyingglass", active: false, help: ar ? "قراءة/فحص سريع (Scrapling)" : "Quick read (Scrapling)") { vm.applySpiderPrefix() }
+        iconButton(vm.withScreenshot ? "eye.fill" : "eye.slash", active: vm.withScreenshot, help: ar ? "رؤية الشاشة" : "See screen") { vm.setWithScreenshot(!vm.withScreenshot) }
+        iconButton(pinIcon, active: vm.pinMode != .off, help: pinHelp) { vm.cyclePinMode() }
+        iconButton(vm.notifyWhenDone ? "bell.fill" : "bell.slash", active: vm.notifyWhenDone, help: ar ? "أشعرني لما يخلّص" : "Notify when done") { vm.toggleNotify() }
+        iconButton("plus.rectangle.on.rectangle", active: false, help: ar ? "نافذة هيرميس جديدة (مستقلة)" : "New Hermes window (independent)") {
+            NotificationCenter.default.post(name: .hbSpawnWindow, object: nil)
+        }
+        iconButton("macwindow.on.rectangle", active: false, help: ar ? "افتح هيرميس ديسكتوب" : "Open Hermes Desktop") { openHermesDesktop() }
+    }
+
+    @ViewBuilder private var sendOrStop: some View {
+        if vm.isLoading {
+            Button(action: { vm.stop() }) {
+                Image(systemName: "stop.circle.fill").font(.system(size: 22)).foregroundColor(.red)
+            }.buttonStyle(.plain).help(ar ? "إيقاف" : "Stop")
+        } else {
+            Button(action: { vm.send() }) {
+                Image(systemName: "arrow.up.circle.fill").font(.system(size: 22))
+                    .foregroundColor(canSend ? t.accent : t.textSecondary.opacity(0.4))
+            }.buttonStyle(.plain).disabled(!canSend)
+        }
+    }
+
     private var controlRow: some View {
         HStack(spacing: 13) {
-            iconButton("square.and.pencil", active: false, help: ar ? "محادثة جديدة (⌘N)" : "New chat (⌘N)") { vm.newChat() }
-                .keyboardShortcut("n", modifiers: .command)
-            iconButton("paperclip", active: false, help: ar ? "إرفاق ملف أو صورة" : "Attach file or image") { openFilePicker() }
-            iconButton("doc.text.magnifyingglass", active: false, help: ar ? "قراءة/فحص سريع (Scrapling)" : "Quick read (Scrapling)") { vm.applySpiderPrefix() }
-            iconButton(vm.withScreenshot ? "eye.fill" : "eye.slash", active: vm.withScreenshot, help: ar ? "رؤية الشاشة" : "See screen") { vm.setWithScreenshot(!vm.withScreenshot) }
-            iconButton(pinIcon, active: vm.pinMode != .off, help: pinHelp) { vm.cyclePinMode() }
-            iconButton(vm.notifyWhenDone ? "bell.fill" : "bell.slash", active: vm.notifyWhenDone, help: ar ? "أشعرني لما يخلّص" : "Notify when done") { vm.toggleNotify() }
-            iconButton("plus.rectangle.on.rectangle", active: false, help: ar ? "نافذة هيرميس جديدة (مستقلة)" : "New Hermes window (independent)") {
-                NotificationCenter.default.post(name: .hbSpawnWindow, object: nil)
-            }
-            iconButton("macwindow.on.rectangle", active: false, help: ar ? "افتح هيرميس ديسكتوب" : "Open Hermes Desktop") { openHermesDesktop() }
-
+            controlIcons
             Spacer()
+            sendOrStop
+        }
+    }
 
-            if vm.isLoading {
-                Button(action: { vm.stop() }) {
-                    Image(systemName: "stop.circle.fill").font(.system(size: 22)).foregroundColor(.red)
-                }.buttonStyle(.plain).help(ar ? "إيقاف" : "Stop")
-            } else {
-                Button(action: { vm.send() }) {
-                    Image(systemName: "arrow.up.circle.fill").font(.system(size: 22))
-                        .foregroundColor(canSend ? t.accent : t.textSecondary.opacity(0.4))
-                }.buttonStyle(.plain).disabled(!canSend)
-            }
+    private var controlRail: some View {
+        VStack(spacing: 16) {
+            controlIcons
+            Spacer()
+            sendOrStop
+        }
+        .frame(maxHeight: .infinity)
+    }
+
+    // Minimal layout hides the tools behind an ellipsis popover.
+    private var minimalMenu: some View {
+        Button(action: { showMinimalControls.toggle() }) {
+            Image(systemName: "ellipsis.circle").font(.system(size: 20)).foregroundColor(t.textSecondary)
+        }
+        .buttonStyle(.plain)
+        .help(ar ? "أدوات" : "Tools")
+        .popover(isPresented: $showMinimalControls, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 18) { controlIcons }
+                .padding(16)
+                .background(t.background)
         }
     }
 
@@ -679,11 +807,20 @@ struct AskView: View {
                     .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(t.surface))
             }
         } else if !msg.text.isEmpty {
-            Markdown(msg.text)
-                .markdownTextStyle { ForegroundColor(t.textPrimary); FontSize(16) }
-                .markdownBlockStyle(\.codeBlock) { configuration in codeBlock(configuration) }
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            if msg.id == vm.streamingMessageId {
+                // Cheap live rendering while tokens stream in.
+                Text(msg.text)
+                    .font(.system(size: 16))
+                    .foregroundColor(t.textPrimary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Markdown(msg.text)
+                    .markdownTextStyle { ForegroundColor(t.textPrimary); FontSize(16) }
+                    .markdownBlockStyle(\.codeBlock) { configuration in codeBlock(configuration) }
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
     }
 

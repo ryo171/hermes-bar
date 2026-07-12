@@ -43,7 +43,21 @@ struct Theme: Identifiable {
               textPrimary: hex(0xCFFFC0), textSecondary: hex(0x5FBF4F)),
         Theme(name: "rose", label: "Rosé",
               background: hex(0x2A1620), surface: hex(0x3D2130), accent: hex(0xFF9EC4),
-              textPrimary: hex(0xFDEFF4), textSecondary: hex(0xCDA3B6))
+              textPrimary: hex(0xFDEFF4), textSecondary: hex(0xCDA3B6)),
+
+        // HermesBar identity themes — matched to the new brand icon directions.
+        Theme(name: "hb-indigo", label: "HermesBar Indigo",
+              background: hex(0x14122A), surface: hex(0x211E44), accent: hex(0x8B7BF0),
+              textPrimary: hex(0xECEAFB), textSecondary: hex(0xA7A2CE)),
+        Theme(name: "hb-aqua", label: "HermesBar Aqua",
+              background: hex(0x081F22), surface: hex(0x123338), accent: hex(0x2FC7A6),
+              textPrimary: hex(0xE6F5F1), textSecondary: hex(0x8FBEB6)),
+        Theme(name: "hb-coral", label: "HermesBar Coral",
+              background: hex(0x241014), surface: hex(0x3A1B22), accent: hex(0xF0855E),
+              textPrimary: hex(0xFAECE7), textSecondary: hex(0xCBA396)),
+        Theme(name: "hb-amber", label: "HermesBar Amber",
+              background: hex(0x22190A), surface: hex(0x362813), accent: hex(0xF5B84A),
+              textPrimary: hex(0xF9F0DC), textSecondary: hex(0xC7B187))
     ]
 
     static let defaultTheme = all[0]
