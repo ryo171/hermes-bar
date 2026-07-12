@@ -203,6 +203,29 @@ final class AskViewModel: ObservableObject {
     var onClose: (() -> Void)?
     var onTaskFinishedNotify: (() -> Void)?   // fired when a notify-worthy task completes
 
+    // A stable id per window/conversation (Hermes session-id shape). Groundwork
+    // for sharing the conversation with Hermes Desktop.
+    private(set) var sessionId: String = AskViewModel.newSessionId()
+    static func newSessionId() -> String {
+        let df = DateFormatter(); df.dateFormat = "yyyyMMdd_HHmmss"
+        let rand = String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(6)).lowercased()
+        return "\(df.string(from: Date()))_\(rand)"
+    }
+
+    // Formatted transcript used to hand the conversation off to Hermes Desktop.
+    func transcriptForHandoff() -> String {
+        guard messages.contains(where: { !$0.text.isEmpty }) else { return "" }
+        let ar = isArabic
+        var s = ar
+            ? "متابعة محادثة من HermesBar (جلسة \(sessionId)):\n\n"
+            : "Continuing a HermesBar conversation (session \(sessionId)):\n\n"
+        for m in messages where !m.text.isEmpty {
+            let who = m.role == "user" ? (ar ? "أنا" : "Me") : "Hermes"
+            s += "### \(who)\n\(m.text)\n\n"
+        }
+        return s
+    }
+
     private var currentTask: Task<Void, Never>?
     private var timerCancellable: AnyCancellable?
     private var pendingBuffer = ""                 // deltas awaiting a throttled flush
@@ -258,6 +281,7 @@ final class AskViewModel: ObservableObject {
         errorText = ""
         elapsed = 0
         noteFilename = nil
+        sessionId = AskViewModel.newSessionId()
     }
 
     var lastAssistantText: String { messages.last(where: { $0.role == "assistant" })?.text ?? "" }
@@ -582,6 +606,9 @@ struct AskView: View {
     @ObservedObject var vm: AskViewModel
     @State private var dropTargeted = false
     @State private var showMinimalControls = false
+    @State private var showAllHistory = false
+
+    private let historyCap = 30   // render only recent turns in the light panel
 
     private var t: Theme { vm.theme }
     private var ar: Bool { vm.isArabic }
@@ -784,10 +811,28 @@ struct AskView: View {
         .frame(maxHeight: 30)
     }
 
+    private var visibleMessages: [ChatMessage] {
+        (showAllHistory || vm.messages.count <= historyCap) ? vm.messages : Array(vm.messages.suffix(historyCap))
+    }
+    private var hiddenCount: Int {
+        showAllHistory ? 0 : max(0, vm.messages.count - historyCap)
+    }
+
     private var contentArea: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                ForEach(vm.messages) { msg in
+            LazyVStack(alignment: .leading, spacing: 12) {
+                if hiddenCount > 0 {
+                    Button(action: { showAllHistory = true }) {
+                        HStack(spacing: 5) {
+                            Image(systemName: "chevron.up")
+                            Text(ar ? "عرض \(hiddenCount) رسالة أقدم" : "Show \(hiddenCount) earlier messages")
+                        }
+                        .font(.system(size: 12)).foregroundColor(t.textSecondary)
+                    }
+                    .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity)
+                }
+                ForEach(visibleMessages) { msg in
                     messageView(msg)
                 }
                 if vm.isLoading, (vm.messages.last?.text.isEmpty ?? false) {
@@ -969,10 +1014,23 @@ struct AskView: View {
     }
 
     private func openHermesDesktop() {
+        // Hand the conversation off: copy the transcript so it can be pasted into
+        // Hermes Desktop to continue, without re-explaining. (Phase 1 — a true
+        // shared live session comes when we move onto the `hermes serve` backend.)
+        let transcript = vm.transcriptForHandoff()
+        if !transcript.isEmpty { copyToPasteboard(transcript) }
+
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
         task.arguments = ["-a", "Hermes"]
         try? task.run()
+
+        if !transcript.isEmpty {
+            Notifier.notify(
+                title: ar ? "المحادثة جاهزة للّصق" : "Conversation copied",
+                body: ar ? "الصقها في هيرميس ديسكتوب للمتابعة من نفس النقطة" : "Paste into Hermes Desktop to continue where you left off"
+            )
+        }
         vm.onClose?()
     }
 
