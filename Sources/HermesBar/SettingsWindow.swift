@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 final class SettingsWindowController: NSWindowController {
     convenience init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 440, height: 620),
+            contentRect: NSRect(x: 0, y: 0, width: 440, height: 670),
             styleMask: [.titled, .closable],
             backing: .buffered, defer: false)
         window.title = "Hermes Bar"
@@ -54,6 +54,7 @@ final class SettingsModel: ObservableObject {
     @Published var newWindowHotKey: HotKeyCombo { didSet { commit() } }
     @Published var layoutName: String { didSet { commit() } }
     @Published var iconStyle: String { didSet { commit() } }
+    @Published var serverManagedSessions: Bool { didSet { commit() } }
 
     init() {
         let s = Settings.shared
@@ -64,6 +65,7 @@ final class SettingsModel: ObservableObject {
         newWindowHotKey = s.newWindowHotKey
         layoutName = s.layoutName
         iconStyle = s.iconStyle
+        serverManagedSessions = s.serverManagedSessions
     }
 
     private func commit() {
@@ -75,6 +77,7 @@ final class SettingsModel: ObservableObject {
         s.newWindowHotKey = newWindowHotKey
         s.layoutName = layoutName
         s.iconStyle = iconStyle
+        s.serverManagedSessions = serverManagedSessions
         s.save()
     }
 }
@@ -199,6 +202,14 @@ struct SettingsView: View {
                     .frame(width: 220)
             }
 
+            // Server-managed sessions (X-Hermes-Session-Id)
+            row(ar ? "جلسات مشتركة" : "Shared sessions") {
+                Toggle("", isOn: $model.serverManagedSessions)
+                    .labelsHidden()
+                    .help(ar ? "يخلي محادثات النافذة جلسات هيرميس حقيقية تكمّلها في الديسكتوب. أطفئه لخوادم OpenAI العامة."
+                             : "Make panel chats real Hermes sessions you can continue in Desktop. Turn off for generic OpenAI hosts.")
+            }
+
             Divider()
 
             Text(ar
@@ -210,7 +221,7 @@ struct SettingsView: View {
             Spacer()
         }
         .padding(24)
-        .frame(width: 440, height: 620, alignment: .topLeading)
+        .frame(width: 440, height: 670, alignment: .topLeading)
         .environment(\.layoutDirection, ar ? .rightToLeft : .leftToRight)
     }
 

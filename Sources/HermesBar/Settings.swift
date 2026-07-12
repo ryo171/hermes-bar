@@ -51,6 +51,7 @@ final class Settings: Codable {
                                                    cmd: true, shift: true, option: false, control: false)
     var layoutName: String = "classic"
     var iconStyle: String = "winged"
+    var serverManagedSessions: Bool = true   // use X-Hermes-Session-Id (Hermes holds history)
     var host: String = "http://localhost:8642"
     var apiKey: String = ""     // empty → resolved from ~/.hermes/.env at request time
     var captureFullScreen: Bool = true
@@ -67,7 +68,7 @@ final class Settings: Codable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case language, themeName, hotKey, newWindowHotKey, layoutName, iconStyle, host, apiKey, captureFullScreen
+        case language, themeName, hotKey, newWindowHotKey, layoutName, iconStyle, serverManagedSessions, host, apiKey, captureFullScreen
     }
 
     init() {}
@@ -83,6 +84,7 @@ final class Settings: Codable {
             ?? HotKeyCombo(keyCode: UInt32(kVK_ANSI_N), cmd: true, shift: true, option: false, control: false)
         layoutName = try c.decodeIfPresent(String.self, forKey: .layoutName) ?? "classic"
         iconStyle = try c.decodeIfPresent(String.self, forKey: .iconStyle) ?? "winged"
+        serverManagedSessions = try c.decodeIfPresent(Bool.self, forKey: .serverManagedSessions) ?? true
         host = try c.decodeIfPresent(String.self, forKey: .host) ?? "http://localhost:8642"
         apiKey = try c.decodeIfPresent(String.self, forKey: .apiKey) ?? ""
         captureFullScreen = try c.decodeIfPresent(Bool.self, forKey: .captureFullScreen) ?? true

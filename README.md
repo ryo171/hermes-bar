@@ -107,6 +107,12 @@ System Settings → Privacy & Security (needed for the screenshot and the global
 HermesBar is a thin, native client. All intelligence and tools (terminal, files,
 browser, computer-use, web) come from your local Hermes agent.
 
+**Sessions.** Each panel conversation is a real Hermes session. HermesBar sends an
+`X-Hermes-Session-Id` header, so Hermes stores the history in `state.db` and
+HermesBar only uploads each new turn. Press **Open Hermes Desktop** and continue
+the *same* session there by its id (from Desktop's Sessions list). Turn off
+"Shared sessions" in Settings when pointing HermesBar at a generic OpenAI host.
+
 ## 🗺️ Roadmap
 
 - [ ] Conversation history + memory (with Obsidian archive)

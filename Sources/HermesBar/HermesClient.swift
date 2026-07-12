@@ -34,12 +34,16 @@ final class HermesClient {
         }.resume()
     }
 
-    // `conversation` is the full array of user/assistant turns. The last user
-    // turn's content may be a multimodal array (text + image_url parts).
+    // `conversation` is the turns to send. In server-managed mode this is just the
+    // new user turn (Hermes loads prior history from state.db via the session
+    // header); otherwise it's the full history. `sessionId`, when set, is sent as
+    // `X-Hermes-Session-Id` so Hermes treats the exchange as a first-class session.
     private func makeRequest(host: String,
                              conversation: [[String: Any]],
                              reasoningEffort: String?,
-                             stream: Bool) -> URLRequest? {
+                             stream: Bool,
+                             sessionId: String?,
+                             includeSystem: Bool) -> URLRequest? {
         guard let url = URL(string: "\(host)/v1/chat/completions") else { return nil }
 
         let systemPrompt = """
@@ -52,7 +56,8 @@ final class HermesClient {
         - Keep prose in Arabic when the user writes in Arabic.
         """
 
-        var messages: [[String: Any]] = [["role": "system", "content": systemPrompt]]
+        var messages: [[String: Any]] = []
+        if includeSystem { messages.append(["role": "system", "content": systemPrompt]) }
         messages.append(contentsOf: conversation)
 
         var payload: [String: Any] = [
@@ -70,6 +75,9 @@ final class HermesClient {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         req.setValue("Bearer \(Settings.shared.resolvedAPIKey())", forHTTPHeaderField: "Authorization")
+        if let sid = sessionId, !sid.isEmpty {
+            req.setValue(sid, forHTTPHeaderField: "X-Hermes-Session-Id")
+        }
         req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
         return req
     }
@@ -78,14 +86,19 @@ final class HermesClient {
     func askStream(host: String? = nil,
                    conversation: [[String: Any]],
                    reasoningEffort: String? = nil,
+                   sessionId: String? = nil,
+                   includeSystem: Bool = true,
                    onDelta: @escaping (String) -> Void,
+                   onSession: ((String) -> Void)? = nil,
                    onDone: @escaping (Error?) -> Void) -> Task<Void, Never> {
 
         let useHost = host ?? Settings.shared.host
         guard let req = makeRequest(host: useHost,
                                     conversation: conversation,
                                     reasoningEffort: reasoningEffort,
-                                    stream: true) else {
+                                    stream: true,
+                                    sessionId: sessionId,
+                                    includeSystem: includeSystem) else {
             DispatchQueue.main.async { onDone(ClientError.notReachable) }
             return Task {}
         }
@@ -93,9 +106,14 @@ final class HermesClient {
         return Task {
             do {
                 let (bytes, response) = try await URLSession.shared.bytes(for: req)
-                if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-                    await MainActor.run { onDone(ClientError.badStatus(http.statusCode, "")) }
-                    return
+                if let http = response as? HTTPURLResponse {
+                    if let sid = http.value(forHTTPHeaderField: "X-Hermes-Session-Id"), !sid.isEmpty {
+                        await MainActor.run { onSession?(sid) }
+                    }
+                    if !(200...299).contains(http.statusCode) {
+                        await MainActor.run { onDone(ClientError.badStatus(http.statusCode, "")) }
+                        return
+                    }
                 }
                 for try await line in bytes.lines {
                     if Task.isCancelled { break }

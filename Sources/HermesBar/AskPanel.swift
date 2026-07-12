@@ -206,6 +206,7 @@ final class AskViewModel: ObservableObject {
     // A stable id per window/conversation (Hermes session-id shape). Groundwork
     // for sharing the conversation with Hermes Desktop.
     private(set) var sessionId: String = AskViewModel.newSessionId()
+    private(set) var sessionEstablished = false   // true after the first successful turn
     static func newSessionId() -> String {
         let df = DateFormatter(); df.dateFormat = "yyyyMMdd_HHmmss"
         let rand = String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(6)).lowercased()
@@ -234,7 +235,13 @@ final class AskViewModel: ObservableObject {
     private var lastConversation: [[String: Any]] = []
     private var hostForTurn = ""
     private var effortForTurn = "low"
+    private var includeSystemForTurn = true
     private var noteFilename: String?
+
+    // Server-managed sessions: Hermes holds history in state.db (keyed by the
+    // session header), so we send only the new turn. Off → full history each time
+    // (for non-Hermes OpenAI hosts).
+    private var serverManaged: Bool { Settings.shared.serverManagedSessions }
 
     // MARK: settings toggles
 
@@ -282,6 +289,8 @@ final class AskViewModel: ObservableObject {
         elapsed = 0
         noteFilename = nil
         sessionId = AskViewModel.newSessionId()
+        sessionEstablished = false
+        includeSystemForTurn = true
     }
 
     var lastAssistantText: String { messages.last(where: { $0.role == "assistant" })?.text ?? "" }
@@ -321,50 +330,64 @@ final class AskViewModel: ObservableObject {
             DispatchQueue.main.async {
                 self.hostForTurn = host
                 self.effortForTurn = effort
-                self.messages.append(ChatMessage(role: "user", text: text))
-
-                var convo: [[String: Any]] = []
-                for (i, m) in self.messages.enumerated() {
-                    if i == self.messages.count - 1, !images.isEmpty {
-                        var content: [[String: Any]] = [["type": "text", "text": m.text]]
-                        for durl in images {
-                            content.append(["type": "image_url", "image_url": ["url": durl, "detail": detail]])
-                        }
-                        convo.append(["role": m.role, "content": content])
-                    } else {
-                        convo.append(["role": m.role, "content": m.text])
-                    }
-                }
-                self.lastConversation = convo
-                self.messages.append(ChatMessage(role: "assistant", text: ""))
-                self.startStream()
+                self.startTurn(text: text, images: images, detail: detail)
             }
         }
     }
 
-    // Regenerate a specific assistant answer: drop it (and anything after) and
-    // re-ask from the user turn that preceded it.
+    // The OpenAI message dict for a user turn (text or multimodal text+images).
+    private func userMessage(text: String, images: [String], detail: String) -> [String: Any] {
+        if images.isEmpty { return ["role": "user", "content": text] }
+        var content: [[String: Any]] = [["type": "text", "text": text]]
+        for durl in images {
+            content.append(["type": "image_url", "image_url": ["url": durl, "detail": detail]])
+        }
+        return ["role": "user", "content": content]
+    }
+
+    // Append a user turn and stream the reply. In server-managed mode (after the
+    // first successful turn) we send ONLY this turn — Hermes has the rest.
+    private func startTurn(text: String, images: [String], detail: String) {
+        messages.append(ChatMessage(role: "user", text: text))
+        let serverMode = serverManaged && sessionEstablished
+        var convo: [[String: Any]] = []
+        if serverMode {
+            convo = [userMessage(text: text, images: images, detail: detail)]
+        } else {
+            for (i, m) in messages.enumerated() {
+                if i == messages.count - 1, !images.isEmpty {
+                    convo.append(userMessage(text: m.text, images: images, detail: detail))
+                } else {
+                    convo.append(["role": m.role, "content": m.text])
+                }
+            }
+        }
+        includeSystemForTurn = !serverMode
+        lastConversation = convo
+        messages.append(ChatMessage(role: "assistant", text: ""))
+        startStream()
+    }
+
+    // Ask the same question again. Hermes keeps history server-side and exposes no
+    // public retry/undo on chat/completions, so "Regenerate" is a fresh re-ask of
+    // the prompting question under the same session (new turn).
     func regenerate(_ id: UUID) {
         guard !isLoading,
               let idx = messages.firstIndex(where: { $0.id == id }),
               messages[idx].role == "assistant" else { return }
-        let keep = Array(messages[0..<idx])
-        guard keep.last?.role == "user" else { return }
+        var q = ""
+        var i = idx - 1
+        while i >= 0 { if messages[i].role == "user" { q = messages[i].text; break }; i -= 1 }
+        guard !q.isEmpty else { return }
         errorText = ""
-        messages = keep
-        var convo: [[String: Any]] = []
-        for m in messages where !m.text.isEmpty { convo.append(["role": m.role, "content": m.text]) }
-        lastConversation = convo
-        hostForTurn = (mode == "fast") ? fastHost() : Settings.shared.host
-        effortForTurn = (mode == "fast") ? "low" : "high"
-        messages.append(ChatMessage(role: "assistant", text: ""))
         isLoading = true
         startTimer()
-        startStream()
+        hostForTurn = (mode == "fast") ? fastHost() : Settings.shared.host
+        effortForTurn = (mode == "fast") ? "low" : "high"
+        startTurn(text: q, images: [], detail: "high")
     }
 
-    // Condense a specific answer — appends a short "summarize the answer above"
-    // turn so the model summarizes that exact message.
+    // Condense the last answer — a new turn asking Hermes to summarize it.
     func summarize(_ id: UUID) {
         guard !isLoading,
               let idx = messages.firstIndex(where: { $0.id == id }),
@@ -375,15 +398,10 @@ final class AskViewModel: ObservableObject {
         startTimer()
         hostForTurn = fastHost()
         effortForTurn = "low"
-        var convo: [[String: Any]] = []
-        for m in messages[0...idx] where !m.text.isEmpty { convo.append(["role": m.role, "content": m.text]) }
-        convo.append(["role": "user", "content": ar
+        let prompt = ar
             ? "لخّص إجابتك السابقة باختصار شديد — النقاط الأساسية فقط، بدون مقدمات."
-            : "Summarize your previous answer very concisely — key points only, no preamble."])
-        lastConversation = convo
-        messages.append(ChatMessage(role: "user", text: ar ? "لخّص الإجابة أعلاه" : "Summarize the answer above"))
-        messages.append(ChatMessage(role: "assistant", text: ""))
-        startStream()
+            : "Summarize your previous answer very concisely — key points only, no preamble."
+        startTurn(text: prompt, images: [], detail: "high")
     }
 
     private func startStream() {
@@ -400,8 +418,13 @@ final class AskViewModel: ObservableObject {
             host: hostForTurn,
             conversation: lastConversation,
             reasoningEffort: effortForTurn,
+            sessionId: serverManaged ? sessionId : nil,
+            includeSystem: includeSystemForTurn,
             onDelta: { [weak self] (piece: String) in
                 self?.pendingBuffer += piece
+            },
+            onSession: { [weak self] (sid: String) in
+                self?.sessionId = sid   // adopt the server's canonical id (e.g. compression lineage)
             },
             onDone: { [weak self] (err: Error?) in
                 self?.finish(err, assistantId: assistantId)
@@ -428,7 +451,10 @@ final class AskViewModel: ObservableObject {
         endStreaming()
         isLoading = false
         stopTimer()
-        if let i = messages.firstIndex(where: { $0.id == assistantId }) { messages[i].elapsed = elapsed }
+        if let i = messages.firstIndex(where: { $0.id == assistantId }) {
+            messages[i].elapsed = elapsed
+            if !messages[i].text.isEmpty { sessionEstablished = true }   // first real reply = session exists
+        }
         if let err = err, let i = messages.firstIndex(where: { $0.id == assistantId }), messages[i].text.isEmpty {
             errorText = err.localizedDescription
             messages.remove(at: i)
@@ -895,7 +921,7 @@ struct AskView: View {
                 actionButton("curlybraces", ar ? "نسخ الكود" : "Copy code") { copyToPasteboard(extractCode(msg.text)) }
             }
             actionButton("text.badge.minus", ar ? "لخّص" : "Summarize") { vm.summarize(msg.id) }
-            actionButton("arrow.clockwise", ar ? "إعادة توليد" : "Regenerate") { vm.regenerate(msg.id) }
+            actionButton("arrow.clockwise", ar ? "اسأل مرة ثانية" : "Ask again") { vm.regenerate(msg.id) }
             Spacer()
             if msg.elapsed > 0 {
                 Text(elapsedLabel(msg.elapsed)).font(.system(size: 11)).foregroundColor(t.textSecondary.opacity(0.8))
@@ -1014,22 +1040,31 @@ struct AskView: View {
     }
 
     private func openHermesDesktop() {
-        // Hand the conversation off: copy the transcript so it can be pasted into
-        // Hermes Desktop to continue, without re-explaining. (Phase 1 — a true
-        // shared live session comes when we move onto the `hermes serve` backend.)
-        let transcript = vm.transcriptForHandoff()
-        if !transcript.isEmpty { copyToPasteboard(transcript) }
-
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
         task.arguments = ["-a", "Hermes"]
         try? task.run()
 
-        if !transcript.isEmpty {
+        // Same-session handoff: the conversation IS a Hermes session, so copy its
+        // id and tell the user to open it from Desktop's Sessions list. (Hermes
+        // exposes no deep-link to open a session by id yet.) For non-Hermes hosts
+        // there's no server session — fall back to pasting the transcript.
+        if Settings.shared.serverManagedSessions, vm.sessionEstablished {
+            copyToPasteboard(vm.sessionId)
             Notifier.notify(
-                title: ar ? "المحادثة جاهزة للّصق" : "Conversation copied",
-                body: ar ? "الصقها في هيرميس ديسكتوب للمتابعة من نفس النقطة" : "Paste into Hermes Desktop to continue where you left off"
+                title: ar ? "رقم الجلسة: \(vm.sessionId)" : "Session: \(vm.sessionId)",
+                body: ar ? "افتحها في هيرميس ديسكتوب من قائمة Sessions (ابحث بالـid — نُسخ لك)"
+                         : "Open it in Hermes Desktop → Sessions (search by id — copied for you)"
             )
+        } else {
+            let transcript = vm.transcriptForHandoff()
+            if !transcript.isEmpty {
+                copyToPasteboard(transcript)
+                Notifier.notify(
+                    title: ar ? "المحادثة جاهزة للّصق" : "Conversation copied",
+                    body: ar ? "الصقها في هيرميس ديسكتوب للمتابعة" : "Paste into Hermes Desktop to continue"
+                )
+            }
         }
         vm.onClose?()
     }
