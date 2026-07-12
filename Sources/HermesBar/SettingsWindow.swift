@@ -1,10 +1,11 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 final class SettingsWindowController: NSWindowController {
     convenience init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 440, height: 560),
+            contentRect: NSRect(x: 0, y: 0, width: 440, height: 620),
             styleMask: [.titled, .closable],
             backing: .buffered, defer: false)
         window.title = "Hermes Bar"
@@ -81,6 +82,7 @@ final class SettingsModel: ObservableObject {
 struct SettingsView: View {
     @StateObject private var model = SettingsModel()
     @StateObject private var recorder = HotKeyRecorder()
+    @State private var hasCustomIcon = HermesIcon.hasCustomImage()
 
     private var ar: Bool { model.language == .arabic }
 
@@ -131,6 +133,21 @@ struct SettingsView: View {
                 }
                 .labelsHidden()
                 .frame(width: 200)
+                .disabled(hasCustomIcon)
+            }
+
+            // Custom icon image (overrides the styles above)
+            row(ar ? "صورة مخصّصة" : "Custom image") {
+                HStack(spacing: 10) {
+                    Button(ar ? "اختر صورة…" : "Choose…") { chooseCustomIcon() }
+                    if hasCustomIcon {
+                        Button(ar ? "إزالة" : "Remove") {
+                            HermesIcon.removeCustomImage()
+                            hasCustomIcon = false
+                            NotificationCenter.default.post(name: Settings.didChangeNotification, object: nil)
+                        }
+                    }
+                }
             }
 
             // Hotkey recorder
@@ -187,8 +204,22 @@ struct SettingsView: View {
             Spacer()
         }
         .padding(24)
-        .frame(width: 440, height: 560, alignment: .topLeading)
+        .frame(width: 440, height: 620, alignment: .topLeading)
         .environment(\.layoutDirection, ar ? .rightToLeft : .leftToRight)
+    }
+
+    private func chooseCustomIcon() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = [.image]
+        panel.begin { resp in
+            if resp == .OK, let url = panel.url, HermesIcon.installCustomImage(from: url) {
+                hasCustomIcon = true
+                NotificationCenter.default.post(name: Settings.didChangeNotification, object: nil)
+            }
+        }
     }
 
     private func layoutLabel(_ l: PanelLayout) -> String {

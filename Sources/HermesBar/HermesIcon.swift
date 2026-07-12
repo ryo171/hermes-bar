@@ -17,6 +17,46 @@ enum IconStyle: String, CaseIterable {
 }
 
 enum HermesIcon {
+    // A user-chosen custom icon lives here and overrides the vector styles.
+    static var customImagePath: String {
+        (Settings.hermesDir as NSString).appendingPathComponent("hermes-menubar.png")
+    }
+    static func hasCustomImage() -> Bool {
+        FileManager.default.fileExists(atPath: customImagePath)
+    }
+    static func removeCustomImage() {
+        try? FileManager.default.removeItem(atPath: customImagePath)
+    }
+
+    // Turn any picked image into a menu-bar template: white background becomes
+    // transparent, everything darker becomes black "ink" (the bar re-tints it so
+    // it adapts to light/dark). Saved to customImagePath.
+    @discardableResult
+    static func installCustomImage(from url: URL) -> Bool {
+        guard let img = NSImage(contentsOf: url),
+              let tiff = img.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff) else { return false }
+        let w = rep.pixelsWide, h = rep.pixelsHigh
+        guard w > 0, h > 0,
+              let out = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h,
+                                         bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                                         isPlanar: false, colorSpaceName: .deviceRGB,
+                                         bytesPerRow: w * 4, bitsPerPixel: 32) else { return false }
+        let hi: CGFloat = 0.93, lo: CGFloat = 0.16
+        for y in 0..<h {
+            for x in 0..<w {
+                let c = (rep.colorAt(x: x, y: y) ?? .white).usingColorSpace(.deviceRGB) ?? .white
+                let lum = 0.299 * c.redComponent + 0.587 * c.greenComponent + 0.114 * c.blueComponent
+                let a: CGFloat = lum >= hi ? 0 : (lum <= lo ? 1 : (hi - lum) / (hi - lo))
+                out.setColor(NSColor(red: 0, green: 0, blue: 0, alpha: a), atX: x, y: y)
+            }
+        }
+        guard let png = out.representation(using: .png, properties: [:]) else { return false }
+        try? FileManager.default.createDirectory(atPath: Settings.hermesDir, withIntermediateDirectories: true)
+        do { try png.write(to: URL(fileURLWithPath: customImagePath)); return true }
+        catch { return false }
+    }
+
     static func statusBarImage() -> NSImage {
         // 1) Prefer a user-supplied logo if present.
         let candidates = [

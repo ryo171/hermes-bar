@@ -42,6 +42,7 @@ struct ChatMessage: Identifiable, Equatable {
     let id = UUID()
     let role: String   // "user" or "assistant"
     var text: String
+    var elapsed: TimeInterval = 0   // time this answer took (assistant messages)
 }
 
 // MARK: - Multiline input (Enter = send, Shift+Enter = newline)
@@ -317,33 +318,46 @@ final class AskViewModel: ObservableObject {
         }
     }
 
-    func regenerate() {
-        guard !isLoading, !lastConversation.isEmpty else { return }
+    // Regenerate a specific assistant answer: drop it (and anything after) and
+    // re-ask from the user turn that preceded it.
+    func regenerate(_ id: UUID) {
+        guard !isLoading,
+              let idx = messages.firstIndex(where: { $0.id == id }),
+              messages[idx].role == "assistant" else { return }
+        let keep = Array(messages[0..<idx])
+        guard keep.last?.role == "user" else { return }
         errorText = ""
-        if messages.last?.role == "assistant" { messages.removeLast() }
+        messages = keep
+        var convo: [[String: Any]] = []
+        for m in messages where !m.text.isEmpty { convo.append(["role": m.role, "content": m.text]) }
+        lastConversation = convo
+        hostForTurn = (mode == "fast") ? fastHost() : Settings.shared.host
+        effortForTurn = (mode == "fast") ? "low" : "high"
         messages.append(ChatMessage(role: "assistant", text: ""))
         isLoading = true
         startTimer()
         startStream()
     }
 
-    // Condense the last answer into a short version (post-answer, so the full
-    // detailed reply is produced first and only summarized on demand).
-    func summarizeLast() {
-        guard !isLoading, !lastAssistantText.isEmpty else { return }
+    // Condense a specific answer — appends a short "summarize the answer above"
+    // turn so the model summarizes that exact message.
+    func summarize(_ id: UUID) {
+        guard !isLoading,
+              let idx = messages.firstIndex(where: { $0.id == id }),
+              messages[idx].role == "assistant", !messages[idx].text.isEmpty else { return }
         let ar = isArabic
         errorText = ""
         isLoading = true
         startTimer()
         hostForTurn = fastHost()
         effortForTurn = "low"
-        let prompt = ar
-            ? "لخّص جوابك السابق باختصار شديد — النقاط الأساسية فقط، بدون مقدمات."
-            : "Summarize your previous answer very concisely — key points only, no preamble."
-        messages.append(ChatMessage(role: "user", text: prompt))
         var convo: [[String: Any]] = []
-        for m in messages where !m.text.isEmpty { convo.append(["role": m.role, "content": m.text]) }
+        for m in messages[0...idx] where !m.text.isEmpty { convo.append(["role": m.role, "content": m.text]) }
+        convo.append(["role": "user", "content": ar
+            ? "لخّص إجابتك السابقة باختصار شديد — النقاط الأساسية فقط، بدون مقدمات."
+            : "Summarize your previous answer very concisely — key points only, no preamble."])
         lastConversation = convo
+        messages.append(ChatMessage(role: "user", text: ar ? "لخّص الإجابة أعلاه" : "Summarize the answer above"))
         messages.append(ChatMessage(role: "assistant", text: ""))
         startStream()
     }
@@ -390,6 +404,7 @@ final class AskViewModel: ObservableObject {
         endStreaming()
         isLoading = false
         stopTimer()
+        if let i = messages.firstIndex(where: { $0.id == assistantId }) { messages[i].elapsed = elapsed }
         if let err = err, let i = messages.firstIndex(where: { $0.id == assistantId }), messages[i].text.isEmpty {
             errorText = err.localizedDescription
             messages.remove(at: i)
@@ -785,9 +800,6 @@ struct AskView: View {
                 if !vm.errorText.isEmpty {
                     Text(vm.errorText).font(.system(size: 14)).foregroundColor(.red).textSelection(.enabled)
                 }
-                if !vm.isLoading, !vm.lastAssistantText.isEmpty {
-                    answerActions
-                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, 2)
@@ -797,46 +809,54 @@ struct AskView: View {
 
     @ViewBuilder private func messageView(_ msg: ChatMessage) -> some View {
         if msg.role == "user" {
-            HStack {
-                Spacer(minLength: 40)
-                Text(msg.text)
-                    .font(.system(size: 15))
-                    .foregroundColor(t.textPrimary)
-                    .textSelection(.enabled)
-                    .padding(.horizontal, 12).padding(.vertical, 8)
-                    .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(t.surface))
+            VStack(alignment: .trailing, spacing: 2) {
+                HStack {
+                    Spacer(minLength: 40)
+                    Text(msg.text)
+                        .font(.system(size: 15))
+                        .foregroundColor(t.textPrimary)
+                        .textSelection(.enabled)
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(t.surface))
+                }
+                actionButton("doc.on.doc", ar ? "نسخ" : "Copy") { copyToPasteboard(msg.text) }
             }
         } else if !msg.text.isEmpty {
-            if msg.id == vm.streamingMessageId {
-                // Cheap live rendering while tokens stream in.
-                Text(msg.text)
-                    .font(.system(size: 16))
-                    .foregroundColor(t.textPrimary)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                Markdown(msg.text)
-                    .markdownTextStyle { ForegroundColor(t.textPrimary); FontSize(16) }
-                    .markdownBlockStyle(\.codeBlock) { configuration in codeBlock(configuration) }
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 4) {
+                if msg.id == vm.streamingMessageId {
+                    // Cheap live rendering while tokens stream in.
+                    Text(msg.text)
+                        .font(.system(size: 16))
+                        .foregroundColor(t.textPrimary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    Markdown(msg.text)
+                        .markdownTextStyle { ForegroundColor(t.textPrimary); FontSize(16) }
+                        .markdownBlockStyle(\.codeBlock) { configuration in codeBlock(configuration) }
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    messageActions(msg)
+                }
             }
         }
     }
 
-    private var answerActions: some View {
-        let last = vm.lastAssistantText
-        return HStack(spacing: 14) {
-            actionButton("doc.on.doc", ar ? "نسخ" : "Copy") { copyToPasteboard(last) }
-            if last.contains("```") {
-                actionButton("curlybraces", ar ? "نسخ الكود" : "Copy code") { copyToPasteboard(extractCode(last)) }
+    // Actions shown under every finished assistant message.
+    private func messageActions(_ msg: ChatMessage) -> some View {
+        HStack(spacing: 14) {
+            actionButton("doc.on.doc", ar ? "نسخ" : "Copy") { copyToPasteboard(msg.text) }
+            if msg.text.contains("```") {
+                actionButton("curlybraces", ar ? "نسخ الكود" : "Copy code") { copyToPasteboard(extractCode(msg.text)) }
             }
-            actionButton("text.badge.minus", ar ? "لخّص" : "Summarize") { vm.summarizeLast() }
-            actionButton("arrow.clockwise", ar ? "إعادة توليد" : "Regenerate") { vm.regenerate() }
+            actionButton("text.badge.minus", ar ? "لخّص" : "Summarize") { vm.summarize(msg.id) }
+            actionButton("arrow.clockwise", ar ? "إعادة توليد" : "Regenerate") { vm.regenerate(msg.id) }
             Spacer()
-            Text(timerText).font(.system(size: 11)).foregroundColor(t.textSecondary.opacity(0.8))
+            if msg.elapsed > 0 {
+                Text(elapsedLabel(msg.elapsed)).font(.system(size: 11)).foregroundColor(t.textSecondary.opacity(0.8))
+            }
         }
-        .padding(.top, 4)
+        .padding(.top, 2)
     }
 
     private func actionButton(_ icon: String, _ label: String, _ action: @escaping () -> Void) -> some View {
@@ -866,13 +886,15 @@ struct AskView: View {
         }
     }
 
-    private var timerText: String {
-        let total = Int(vm.elapsed)
+    private var timerText: String { elapsedLabel(vm.elapsed) }
+
+    private func elapsedLabel(_ e: TimeInterval) -> String {
+        let total = Int(e)
         if total >= 60 {
             let m = total / 60, s = total % 60
             return ar ? "⏱ \(m) د \(s) ث" : "⏱ \(m)m \(s)s"
         }
-        return String(format: "⏱ %.1f%@", vm.elapsed, ar ? " ث" : "s")
+        return String(format: "⏱ %.1f%@", e, ar ? " ث" : "s")
     }
 
     private var pinIcon: String {
