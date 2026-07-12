@@ -48,6 +48,12 @@ if [ -f "hermes-menubar.png" ]; then
     echo "==> Bundled custom menu-bar icon."
 fi
 
+# The shipped "Hermes" icon style (selectable in Settings).
+if [ -f "hermes-girl.png" ]; then
+    cp "hermes-girl.png" "$RES/hermes-girl.png"
+    echo "==> Bundled Hermes icon style."
+fi
+
 # Ad-hoc codesign so the permission grants stick across launches.
 codesign --force --deep --sign - "$APP" 2>/dev/null || \
     echo "   (codesign skipped — app still runs; you may re-grant permissions after rebuilds)"

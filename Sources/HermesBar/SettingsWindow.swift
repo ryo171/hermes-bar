@@ -258,6 +258,7 @@ struct SettingsView: View {
         case .spark:  return ar ? "لوحة + ومضة" : "Spark"
         case .comet:  return ar ? "مذنّب" : "Comet"
         case .prompt: return ar ? "مؤشّر أمر" : "Prompt"
+        case .hermes: return ar ? "هيرميس" : "Hermes"
         }
     }
 

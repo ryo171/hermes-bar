@@ -5,28 +5,27 @@ import AppKit
 // `hermes-menubar.png` (about 36x36, transparent) next to the app / in ~/.hermes/
 // and it will be picked up automatically, overriding the vector style.
 enum IconStyle: String, CaseIterable {
-    case winged, spark, comet, prompt
+    case winged, spark, comet, prompt, hermes
     var label: String {
         switch self {
         case .winged: return "Winged mark"
         case .spark:  return "Spark panel"
         case .comet:  return "Comet caret"
         case .prompt: return "Prompt spark"
+        case .hermes: return "Hermes"
         }
     }
 }
 
 enum HermesIcon {
-    // A user-chosen custom icon lives here and overrides the vector styles.
+    // A user-chosen custom icon at ~/.hermes/hermes-menubar.png overrides the
+    // built-in styles at runtime. The shipped "Hermes" style loads a bundled
+    // image (hermes-girl.png) so it survives rebuilds and can't be deleted.
     static var customImagePath: String {
         (Settings.hermesDir as NSString).appendingPathComponent("hermes-menubar.png")
     }
-    static func hasCustomImage() -> Bool {
-        FileManager.default.fileExists(atPath: customImagePath)
-    }
-    static func removeCustomImage() {
-        try? FileManager.default.removeItem(atPath: customImagePath)
-    }
+    static func hasCustomImage() -> Bool { FileManager.default.fileExists(atPath: customImagePath) }
+    static func removeCustomImage() { try? FileManager.default.removeItem(atPath: customImagePath) }
 
     static func loadCustomPreview() -> NSImage? {
         guard hasCustomImage(), let img = NSImage(contentsOfFile: customImagePath) else { return nil }
@@ -34,12 +33,9 @@ enum HermesIcon {
         return img
     }
 
-    // Turn any picked image into a menu-bar template. Works for a subject on a
-    // plain background of ANY color, or an image that already has transparency:
-    //  • detect the background from the four corners
-    //  • pixels near that background colour (or already transparent) → clear
-    //  • everything else → black "ink" (the bar re-tints it for light/dark)
-    // The source is first downscaled so the scan is fast and 18pt-appropriate.
+    // Cut the background out of a picked image and flatten to a black template
+    // (adapts to light/dark). Detects the background from the four corners, so it
+    // works for a subject on a plain background of any colour, or transparency.
     @discardableResult
     static func installCustomImage(from url: URL) -> Bool {
         guard let src = NSImage(contentsOf: url) else { return false }
@@ -49,7 +45,6 @@ enum HermesIcon {
         let scale = min(1.0, maxDim / max(os.width, os.height))
         let w = max(1, Int((os.width * scale).rounded()))
         let h = max(1, Int((os.height * scale).rounded()))
-
         guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h,
                                          bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
                                          isPlanar: false, colorSpaceName: .deviceRGB,
@@ -63,7 +58,6 @@ enum HermesIcon {
             let c = (rep.colorAt(x: x, y: y) ?? .clear).usingColorSpace(.deviceRGB) ?? .clear
             return (c.redComponent, c.greenComponent, c.blueComponent, c.alphaComponent)
         }
-        // Average the four corners to learn the background.
         let corners = [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)].map { rgba($0.0, $0.1) }
         let bgR = corners.map { $0.0 }.reduce(0, +) / 4
         let bgG = corners.map { $0.1 }.reduce(0, +) / 4
@@ -80,10 +74,10 @@ enum HermesIcon {
                 let (r, g, b, sa) = rgba(x, y)
                 var a: CGFloat
                 if transparentBackground {
-                    a = sa                                   // respect source alpha
+                    a = sa
                 } else {
                     let d = ((r - bgR) * (r - bgR) + (g - bgG) * (g - bgG) + (b - bgB) * (b - bgB)).squareRoot()
-                    a = min(1, max(0, (d - 0.10) / 0.30)) * sa   // near-bg → clear, far → ink
+                    a = min(1, max(0, (d - 0.10) / 0.30)) * sa
                 }
                 out.setColor(NSColor(red: 0, green: 0, blue: 0, alpha: a), atX: x, y: y)
             }
@@ -94,10 +88,18 @@ enum HermesIcon {
         catch { return false }
     }
 
+    // Look up a bundled PNG resource by name.
+    private static func bundledImage(_ name: String) -> NSImage? {
+        guard let base = Bundle.main.resourcePath else { return nil }
+        let p = (base as NSString).appendingPathComponent(name)
+        guard FileManager.default.fileExists(atPath: p) else { return nil }
+        return NSImage(contentsOfFile: p)
+    }
+
     static func statusBarImage() -> NSImage {
-        // 1) Prefer a user-supplied logo if present.
+        // 1) A runtime custom logo (~/.hermes or bundle) wins over everything.
         let candidates = [
-            (Settings.hermesDir as NSString).appendingPathComponent("hermes-menubar.png"),
+            customImagePath,
             (Bundle.main.resourcePath.map { ($0 as NSString).appendingPathComponent("hermes-menubar.png") }) ?? ""
         ]
         for path in candidates where !path.isEmpty {
@@ -108,14 +110,21 @@ enum HermesIcon {
             }
         }
 
-        // 2) Otherwise draw the selected vector style.
+        // 2) The shipped "Hermes" style loads its bundled image asset.
         let style = IconStyle(rawValue: Settings.shared.iconStyle) ?? .winged
+        if style == .hermes, let img = bundledImage("hermes-girl.png") {
+            img.size = NSSize(width: 18, height: 18)
+            img.isTemplate = true
+            return img
+        }
+
+        // 3) Otherwise draw the selected vector style.
         let size = NSSize(width: 18, height: 18)
         let image = NSImage(size: size, flipped: false) { rect in
             NSColor.black.setStroke()
             NSColor.black.setFill()
             switch style {
-            case .winged: drawWinged(rect)
+            case .winged, .hermes: drawWinged(rect)   // .hermes falls back if the asset is missing
             case .spark:  drawSpark(rect)
             case .comet:  drawComet(rect)
             case .prompt: drawPrompt(rect)
