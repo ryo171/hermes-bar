@@ -83,6 +83,7 @@ struct SettingsView: View {
     @StateObject private var model = SettingsModel()
     @StateObject private var recorder = HotKeyRecorder()
     @State private var hasCustomIcon = HermesIcon.hasCustomImage()
+    @State private var iconPreview: NSImage? = HermesIcon.loadCustomPreview()
 
     private var ar: Bool { model.language == .arabic }
 
@@ -139,11 +140,16 @@ struct SettingsView: View {
             // Custom icon image (overrides the styles above)
             row(ar ? "صورة مخصّصة" : "Custom image") {
                 HStack(spacing: 10) {
+                    if let p = iconPreview {
+                        previewChip(p, bg: .white, tint: .black)
+                        previewChip(p, bg: Color(white: 0.16), tint: .white)
+                    }
                     Button(ar ? "اختر صورة…" : "Choose…") { chooseCustomIcon() }
                     if hasCustomIcon {
                         Button(ar ? "إزالة" : "Remove") {
                             HermesIcon.removeCustomImage()
                             hasCustomIcon = false
+                            iconPreview = nil
                             NotificationCenter.default.post(name: Settings.didChangeNotification, object: nil)
                         }
                     }
@@ -208,6 +214,20 @@ struct SettingsView: View {
         .environment(\.layoutDirection, ar ? .rightToLeft : .leftToRight)
     }
 
+    private func previewChip(_ img: NSImage, bg: Color, tint: Color) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 5).fill(bg)
+            Image(nsImage: img)
+                .resizable()
+                .renderingMode(.template)
+                .interpolation(.high)
+                .frame(width: 18, height: 18)
+                .foregroundColor(tint)
+        }
+        .frame(width: 26, height: 26)
+        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Color.secondary.opacity(0.3)))
+    }
+
     private func chooseCustomIcon() {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = false
@@ -217,6 +237,7 @@ struct SettingsView: View {
         panel.begin { resp in
             if resp == .OK, let url = panel.url, HermesIcon.installCustomImage(from: url) {
                 hasCustomIcon = true
+                iconPreview = HermesIcon.loadCustomPreview()
                 NotificationCenter.default.post(name: Settings.didChangeNotification, object: nil)
             }
         }

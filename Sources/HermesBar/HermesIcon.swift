@@ -28,26 +28,63 @@ enum HermesIcon {
         try? FileManager.default.removeItem(atPath: customImagePath)
     }
 
-    // Turn any picked image into a menu-bar template: white background becomes
-    // transparent, everything darker becomes black "ink" (the bar re-tints it so
-    // it adapts to light/dark). Saved to customImagePath.
+    static func loadCustomPreview() -> NSImage? {
+        guard hasCustomImage(), let img = NSImage(contentsOfFile: customImagePath) else { return nil }
+        img.isTemplate = true
+        return img
+    }
+
+    // Turn any picked image into a menu-bar template. Works for a subject on a
+    // plain background of ANY color, or an image that already has transparency:
+    //  • detect the background from the four corners
+    //  • pixels near that background colour (or already transparent) → clear
+    //  • everything else → black "ink" (the bar re-tints it for light/dark)
+    // The source is first downscaled so the scan is fast and 18pt-appropriate.
     @discardableResult
     static func installCustomImage(from url: URL) -> Bool {
-        guard let img = NSImage(contentsOf: url),
-              let tiff = img.tiffRepresentation,
-              let rep = NSBitmapImageRep(data: tiff) else { return false }
-        let w = rep.pixelsWide, h = rep.pixelsHigh
-        guard w > 0, h > 0,
-              let out = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h,
+        guard let src = NSImage(contentsOf: url) else { return false }
+        let os = src.size
+        guard os.width > 0, os.height > 0 else { return false }
+        let maxDim: CGFloat = 128
+        let scale = min(1.0, maxDim / max(os.width, os.height))
+        let w = max(1, Int((os.width * scale).rounded()))
+        let h = max(1, Int((os.height * scale).rounded()))
+
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h,
                                          bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
                                          isPlanar: false, colorSpaceName: .deviceRGB,
                                          bytesPerRow: w * 4, bitsPerPixel: 32) else { return false }
-        let hi: CGFloat = 0.93, lo: CGFloat = 0.16
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        src.draw(in: NSRect(x: 0, y: 0, width: w, height: h))
+        NSGraphicsContext.restoreGraphicsState()
+
+        func rgba(_ x: Int, _ y: Int) -> (CGFloat, CGFloat, CGFloat, CGFloat) {
+            let c = (rep.colorAt(x: x, y: y) ?? .clear).usingColorSpace(.deviceRGB) ?? .clear
+            return (c.redComponent, c.greenComponent, c.blueComponent, c.alphaComponent)
+        }
+        // Average the four corners to learn the background.
+        let corners = [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)].map { rgba($0.0, $0.1) }
+        let bgR = corners.map { $0.0 }.reduce(0, +) / 4
+        let bgG = corners.map { $0.1 }.reduce(0, +) / 4
+        let bgB = corners.map { $0.2 }.reduce(0, +) / 4
+        let bgA = corners.map { $0.3 }.reduce(0, +) / 4
+        let transparentBackground = bgA < 0.3
+
+        guard let out = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h,
+                                         bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                                         isPlanar: false, colorSpaceName: .deviceRGB,
+                                         bytesPerRow: w * 4, bitsPerPixel: 32) else { return false }
         for y in 0..<h {
             for x in 0..<w {
-                let c = (rep.colorAt(x: x, y: y) ?? .white).usingColorSpace(.deviceRGB) ?? .white
-                let lum = 0.299 * c.redComponent + 0.587 * c.greenComponent + 0.114 * c.blueComponent
-                let a: CGFloat = lum >= hi ? 0 : (lum <= lo ? 1 : (hi - lum) / (hi - lo))
+                let (r, g, b, sa) = rgba(x, y)
+                var a: CGFloat
+                if transparentBackground {
+                    a = sa                                   // respect source alpha
+                } else {
+                    let d = ((r - bgR) * (r - bgR) + (g - bgG) * (g - bgG) + (b - bgB) * (b - bgB)).squareRoot()
+                    a = min(1, max(0, (d - 0.10) / 0.30)) * sa   // near-bg → clear, far → ink
+                }
                 out.setColor(NSColor(red: 0, green: 0, blue: 0, alpha: a), atX: x, y: y)
             }
         }
