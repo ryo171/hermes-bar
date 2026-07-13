@@ -213,6 +213,23 @@ final class AskViewModel: ObservableObject {
         return "\(df.string(from: Date()))_\(rand)"
     }
 
+    // Give the Hermes session a human title (first question), so it's recognizable
+    // at the top of Hermes Desktop's session list. Best-effort via the CLI; the id
+    // is a safe fixed charset and the title is passed via env to avoid injection.
+    func renameSessionBestEffort(title: String) {
+        guard serverManaged, sessionEstablished, !title.isEmpty else { return }
+        let id = sessionId
+        DispatchQueue.global(qos: .utility).async {
+            let task = Process()
+            task.executableURL = URL(fileURLWithPath: "/bin/zsh")
+            var env = ProcessInfo.processInfo.environment
+            env["HB_TITLE"] = title
+            task.environment = env
+            task.arguments = ["-lc", "hermes sessions rename \(id) \"$HB_TITLE\" >/dev/null 2>&1 || true"]
+            try? task.run()
+        }
+    }
+
     // Formatted transcript used to hand the conversation off to Hermes Desktop.
     func transcriptForHandoff() -> String {
         guard messages.contains(where: { !$0.text.isEmpty }) else { return "" }
@@ -1040,32 +1057,27 @@ struct AskView: View {
     }
 
     private func openHermesDesktop() {
+        // The conversation is already a Hermes session. Title it by the first
+        // question and open Desktop — it's the most-recent session there, so the
+        // user just clicks it at the top of the list. No id, no search.
+        if Settings.shared.serverManagedSessions, vm.sessionEstablished {
+            let firstQ = vm.messages.first(where: { $0.role == "user" })?.text ?? ""
+            let title = String(firstQ.prefix(60))
+                .replacingOccurrences(of: "\n", with: " ")
+                .trimmingCharacters(in: .whitespaces)
+            vm.renameSessionBestEffort(title: title)
+            Notifier.notify(
+                title: ar ? "افتحها في هيرميس ديسكتوب" : "Open in Hermes Desktop",
+                body: title.isEmpty
+                    ? (ar ? "محادثتك أحدث جلسة في القائمة" : "Your chat is the newest session in the list")
+                    : (ar ? "محادثتك أحدث جلسة باسم: \(title)" : "Newest session — named: \(title)")
+            )
+        }
+
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
         task.arguments = ["-a", "Hermes"]
         try? task.run()
-
-        // Same-session handoff: the conversation IS a Hermes session, so copy its
-        // id and tell the user to open it from Desktop's Sessions list. (Hermes
-        // exposes no deep-link to open a session by id yet.) For non-Hermes hosts
-        // there's no server session — fall back to pasting the transcript.
-        if Settings.shared.serverManagedSessions, vm.sessionEstablished {
-            copyToPasteboard(vm.sessionId)
-            Notifier.notify(
-                title: ar ? "رقم الجلسة: \(vm.sessionId)" : "Session: \(vm.sessionId)",
-                body: ar ? "افتحها في هيرميس ديسكتوب من قائمة Sessions (ابحث بالـid — نُسخ لك)"
-                         : "Open it in Hermes Desktop → Sessions (search by id — copied for you)"
-            )
-        } else {
-            let transcript = vm.transcriptForHandoff()
-            if !transcript.isEmpty {
-                copyToPasteboard(transcript)
-                Notifier.notify(
-                    title: ar ? "المحادثة جاهزة للّصق" : "Conversation copied",
-                    body: ar ? "الصقها في هيرميس ديسكتوب للمتابعة" : "Paste into Hermes Desktop to continue"
-                )
-            }
-        }
         vm.onClose?()
     }
 
