@@ -207,27 +207,17 @@ final class AskViewModel: ObservableObject {
     // for sharing the conversation with Hermes Desktop.
     private(set) var sessionId: String = AskViewModel.newSessionId()
     private(set) var sessionEstablished = false   // true after the first successful turn
+    private var titleApplied = false              // PATCH the session title only once
     static func newSessionId() -> String {
         let df = DateFormatter(); df.dateFormat = "yyyyMMdd_HHmmss"
         let rand = String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(6)).lowercased()
         return "\(df.string(from: Date()))_\(rand)"
     }
 
-    // Give the Hermes session a human title (first question), so it's recognizable
-    // at the top of Hermes Desktop's session list. Best-effort via the CLI; the id
-    // is a safe fixed charset and the title is passed via env to avoid injection.
-    func renameSessionBestEffort(title: String) {
-        guard serverManaged, sessionEstablished, !title.isEmpty else { return }
-        let id = sessionId
-        DispatchQueue.global(qos: .utility).async {
-            let task = Process()
-            task.executableURL = URL(fileURLWithPath: "/bin/zsh")
-            var env = ProcessInfo.processInfo.environment
-            env["HB_TITLE"] = title
-            task.environment = env
-            task.arguments = ["-lc", "hermes sessions rename \(id) \"$HB_TITLE\" >/dev/null 2>&1 || true"]
-            try? task.run()
-        }
+    // The session's human title (first question), shown in Hermes Desktop's list.
+    var sessionTitle: String {
+        let q = messages.first(where: { $0.role == "user" })?.text ?? ""
+        return String(q.prefix(60)).replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
     }
 
     // Formatted transcript used to hand the conversation off to Hermes Desktop.
@@ -307,6 +297,7 @@ final class AskViewModel: ObservableObject {
         noteFilename = nil
         sessionId = AskViewModel.newSessionId()
         sessionEstablished = false
+        titleApplied = false
         includeSystemForTurn = true
     }
 
@@ -470,7 +461,13 @@ final class AskViewModel: ObservableObject {
         stopTimer()
         if let i = messages.firstIndex(where: { $0.id == assistantId }) {
             messages[i].elapsed = elapsed
-            if !messages[i].text.isEmpty { sessionEstablished = true }   // first real reply = session exists
+            if !messages[i].text.isEmpty {
+                sessionEstablished = true   // first real reply = session exists
+                if serverManaged, !titleApplied {
+                    titleApplied = true
+                    HermesClient.shared.setSessionTitle(host: hostForTurn, sessionId: sessionId, title: sessionTitle)
+                }
+            }
         }
         if let err = err, let i = messages.firstIndex(where: { $0.id == assistantId }), messages[i].text.isEmpty {
             errorText = err.localizedDescription
@@ -1057,27 +1054,32 @@ struct AskView: View {
     }
 
     private func openHermesDesktop() {
-        // The conversation is already a Hermes session. Title it by the first
-        // question and open Desktop — it's the most-recent session there, so the
-        // user just clicks it at the top of the list. No id, no search.
-        if Settings.shared.serverManagedSessions, vm.sessionEstablished {
-            let firstQ = vm.messages.first(where: { $0.role == "user" })?.text ?? ""
-            let title = String(firstQ.prefix(60))
-                .replacingOccurrences(of: "\n", with: " ")
-                .trimmingCharacters(in: .whitespaces)
-            vm.renameSessionBestEffort(title: title)
-            Notifier.notify(
-                title: ar ? "افتحها في هيرميس ديسكتوب" : "Open in Hermes Desktop",
-                body: title.isEmpty
-                    ? (ar ? "محادثتك أحدث جلسة في القائمة" : "Your chat is the newest session in the list")
-                    : (ar ? "محادثتك أحدث جلسة باسم: \(title)" : "Newest session — named: \(title)")
-            )
+        // One-click open the exact session via Hermes' deep link. The session is
+        // already titled (PATCHed on first reply), so it's recognizable too.
+        let deepLink = (Settings.shared.serverManagedSessions && vm.sessionEstablished)
+            ? "hermes://session/\(vm.sessionId)" : nil
+
+        func open(_ args: [String]) -> Int32 {
+            let task = Process()
+            task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            task.arguments = args
+            try? task.run()
+            task.waitUntilExit()
+            return task.terminationStatus
         }
 
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        task.arguments = ["-a", "Hermes"]
-        try? task.run()
+        if let link = deepLink {
+            // If the scheme isn't handled yet (older Desktop), fall back to launch.
+            if open([link]) != 0 { _ = open(["-a", "Hermes"]) }
+            let title = vm.sessionTitle
+            Notifier.notify(
+                title: ar ? "فتح المحادثة في هيرميس ديسكتوب" : "Opening in Hermes Desktop",
+                body: title.isEmpty ? (ar ? "نفس الجلسة" : "The same session")
+                                     : (ar ? "الجلسة: \(title)" : "Session: \(title)")
+            )
+        } else {
+            _ = open(["-a", "Hermes"])
+        }
         vm.onClose?()
     }
 
