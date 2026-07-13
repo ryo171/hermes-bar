@@ -34,6 +34,21 @@ final class HermesClient {
         }.resume()
     }
 
+    // Set a human title on a Hermes session (shows in Desktop's session list).
+    // Fire-and-forget PATCH /api/sessions/{id}. Best-effort — ignores failures.
+    func setSessionTitle(host: String?, sessionId: String, title: String) {
+        let useHost = host ?? Settings.shared.host
+        let encodedId = sessionId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? sessionId
+        guard !title.isEmpty, let url = URL(string: "\(useHost)/api/sessions/\(encodedId)") else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "PATCH"
+        req.timeoutInterval = 10
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("Bearer \(Settings.shared.resolvedAPIKey())", forHTTPHeaderField: "Authorization")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["title": title])
+        URLSession.shared.dataTask(with: req).resume()
+    }
+
     // `conversation` is the turns to send. In server-managed mode this is just the
     // new user turn (Hermes loads prior history from state.db via the session
     // header); otherwise it's the full history. `sessionId`, when set, is sent as
