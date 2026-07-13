@@ -60,7 +60,8 @@ final class HermesClient {
                              sessionId: String?,
                              includeSystem: Bool,
                              apiKey: String?,
-                             model: String) -> URLRequest? {
+                             model: String,
+                             webSearch: Bool) -> URLRequest? {
         // `host` may already include the /v1 path (direct providers); only append
         // the endpoint, not a duplicate /v1.
         let base = host.hasSuffix("/v1") ? host : "\(host)/v1"
@@ -88,6 +89,9 @@ final class HermesClient {
         if let effort = reasoningEffort, !effort.isEmpty {
             payload["reasoning_effort"] = effort
         }
+        if webSearch {
+            payload["plugins"] = [["id": "web"]]   // OpenRouter web-search plugin
+        }
 
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -111,6 +115,7 @@ final class HermesClient {
                    includeSystem: Bool = true,
                    apiKey: String? = nil,
                    model: String = "hermes-agent",
+                   webSearch: Bool = false,
                    onDelta: @escaping (String) -> Void,
                    onSession: ((String) -> Void)? = nil,
                    onDone: @escaping (Error?) -> Void) -> Task<Void, Never> {
@@ -123,7 +128,8 @@ final class HermesClient {
                                     sessionId: sessionId,
                                     includeSystem: includeSystem,
                                     apiKey: apiKey,
-                                    model: model) else {
+                                    model: model,
+                                    webSearch: webSearch) else {
             DispatchQueue.main.async { onDone(ClientError.notReachable) }
             return Task {}
         }

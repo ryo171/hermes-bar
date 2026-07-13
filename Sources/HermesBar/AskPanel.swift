@@ -195,6 +195,8 @@ final class AskViewModel: ObservableObject {
     @Published var mode: String = UserDefaults.standard.string(forKey: "hb.mode") ?? "fast"
     // Saving = talk directly to a cheap model (no Hermes agent). Deep = full agent.
     @Published var savingMode: Bool = UserDefaults.standard.bool(forKey: "hb.saving")
+    // Web search in Saving mode (OpenRouter web plugin) — off by default (costs per search).
+    @Published var webSearch: Bool = UserDefaults.standard.bool(forKey: "hb.websearch")
     @Published var withScreenshot: Bool =
         (UserDefaults.standard.object(forKey: "hb.withshot") as? Bool) ?? true
 
@@ -255,6 +257,7 @@ final class AskViewModel: ObservableObject {
     // MARK: settings toggles
 
     func setMode(_ m: String) { mode = m; UserDefaults.standard.set(m, forKey: "hb.mode") }
+    func toggleWebSearch() { webSearch.toggle(); UserDefaults.standard.set(webSearch, forKey: "hb.websearch") }
 
     // Flip Saving ⇄ Deep. Escalating to Deep starts a FRESH Hermes session so the
     // next turn re-seeds it with the full transcript — the conversation continues
@@ -444,6 +447,7 @@ final class AskViewModel: ObservableObject {
         let model = savingMode ? s.savingModel : (s.deepModel.isEmpty ? "hermes-agent" : s.deepModel)
         let key: String? = savingMode ? s.resolvedOpenRouterKey() : nil
         let sid: String? = (!savingMode && serverManaged) ? sessionId : nil
+        let useWebSearch = savingMode && webSearch   // deep mode already searches via Hermes tools
 
         currentTask = HermesClient.shared.askStream(
             host: host,
@@ -453,6 +457,7 @@ final class AskViewModel: ObservableObject {
             includeSystem: includeSystemForTurn,
             apiKey: key,
             model: model,
+            webSearch: useWebSearch,
             onDelta: { [weak self] (piece: String) in
                 self?.pendingBuffer += piece
             },
@@ -798,6 +803,14 @@ struct AskView: View {
                         ? (ar ? "وضع التوفير (رخيص/مباشر) — اضغط للعميق" : "Saving mode (cheap) — tap for Deep")
                         : (ar ? "وضع عميق (هيرميس كامل + ديسكتوب) — اضغط للتوفير" : "Deep mode (full Hermes) — tap for Saving")) {
             vm.toggleSaving()
+        }
+        if vm.savingMode {
+            iconButton(vm.webSearch ? "globe" : "globe.badge.chevron.backward",
+                       active: vm.webSearch,
+                       help: ar ? "بحث ويب في وضع التوفير (نتائج حالية · تكلفة بسيطة للبحث)"
+                                : "Web search in Saving mode (current results · small per-search cost)") {
+                vm.toggleWebSearch()
+            }
         }
         iconButton("paperclip", active: false, help: ar ? "إرفاق ملف أو صورة" : "Attach file or image") { openFilePicker() }
         iconButton("doc.text.magnifyingglass", active: false, help: ar ? "قراءة/فحص سريع (Scrapling)" : "Quick read (Scrapling)") { vm.applySpiderPrefix() }
