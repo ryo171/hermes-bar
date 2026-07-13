@@ -193,6 +193,8 @@ final class AskViewModel: ObservableObject {
     @Published var notifyWhenDone: Bool = UserDefaults.standard.bool(forKey: "hb.notify")
     @Published var attachments: [AttachmentItem] = []
     @Published var mode: String = UserDefaults.standard.string(forKey: "hb.mode") ?? "fast"
+    // Saving = talk directly to a cheap model (no Hermes agent). Deep = full agent.
+    @Published var savingMode: Bool = UserDefaults.standard.bool(forKey: "hb.saving")
     @Published var withScreenshot: Bool =
         (UserDefaults.standard.object(forKey: "hb.withshot") as? Bool) ?? true
 
@@ -253,6 +255,19 @@ final class AskViewModel: ObservableObject {
     // MARK: settings toggles
 
     func setMode(_ m: String) { mode = m; UserDefaults.standard.set(m, forKey: "hb.mode") }
+
+    // Flip Saving ⇄ Deep. Escalating to Deep starts a FRESH Hermes session so the
+    // next turn re-seeds it with the full transcript — the conversation continues
+    // in Hermes/Desktop with everything, no re-explaining.
+    func toggleSaving() {
+        savingMode.toggle()
+        UserDefaults.standard.set(savingMode, forKey: "hb.saving")
+        if !savingMode {
+            sessionId = AskViewModel.newSessionId()
+            sessionEstablished = false
+            titleApplied = false
+        }
+    }
     func setWithScreenshot(_ on: Bool) { withScreenshot = on; UserDefaults.standard.set(on, forKey: "hb.withshot") }
     func toggleNotify() { notifyWhenDone.toggle(); UserDefaults.standard.set(notifyWhenDone, forKey: "hb.notify") }
 
@@ -357,7 +372,8 @@ final class AskViewModel: ObservableObject {
     // first successful turn) we send ONLY this turn — Hermes has the rest.
     private func startTurn(text: String, images: [String], detail: String) {
         messages.append(ChatMessage(role: "user", text: text))
-        let serverMode = serverManaged && sessionEstablished
+        // Saving mode is stateless (direct provider) → always send full history.
+        let serverMode = !savingMode && serverManaged && sessionEstablished
         var convo: [[String: Any]] = []
         if serverMode {
             convo = [userMessage(text: text, images: images, detail: detail)]
@@ -422,12 +438,21 @@ final class AskViewModel: ObservableObject {
         flushCancellable = Timer.publish(every: 0.09, on: .main, in: .common).autoconnect()
             .sink { [weak self] _ in self?.flushPending() }
 
+        // Route by mode: Saving → cheap direct provider; Deep → Hermes gateway.
+        let s = Settings.shared
+        let host = savingMode ? s.directHost : hostForTurn
+        let model = savingMode ? s.savingModel : (s.deepModel.isEmpty ? "hermes-agent" : s.deepModel)
+        let key: String? = savingMode ? s.resolvedOpenRouterKey() : nil
+        let sid: String? = (!savingMode && serverManaged) ? sessionId : nil
+
         currentTask = HermesClient.shared.askStream(
-            host: hostForTurn,
+            host: host,
             conversation: lastConversation,
-            reasoningEffort: effortForTurn,
-            sessionId: serverManaged ? sessionId : nil,
+            reasoningEffort: savingMode ? nil : effortForTurn,
+            sessionId: sid,
             includeSystem: includeSystemForTurn,
+            apiKey: key,
+            model: model,
             onDelta: { [weak self] (piece: String) in
                 self?.pendingBuffer += piece
             },
@@ -461,7 +486,7 @@ final class AskViewModel: ObservableObject {
         stopTimer()
         if let i = messages.firstIndex(where: { $0.id == assistantId }) {
             messages[i].elapsed = elapsed
-            if !messages[i].text.isEmpty {
+            if !messages[i].text.isEmpty, !savingMode {   // Saving mode isn't a Hermes session
                 sessionEstablished = true   // first real reply = session exists
                 if serverManaged, !titleApplied {
                     titleApplied = true
@@ -767,6 +792,13 @@ struct AskView: View {
     @ViewBuilder private var controlIcons: some View {
         iconButton("square.and.pencil", active: false, help: ar ? "محادثة جديدة (⌘N)" : "New chat (⌘N)") { vm.newChat() }
             .keyboardShortcut("n", modifiers: .command)
+        iconButton(vm.savingMode ? "leaf.fill" : "brain",
+                   active: vm.savingMode,
+                   help: vm.savingMode
+                        ? (ar ? "وضع التوفير (رخيص/مباشر) — اضغط للعميق" : "Saving mode (cheap) — tap for Deep")
+                        : (ar ? "وضع عميق (هيرميس كامل + ديسكتوب) — اضغط للتوفير" : "Deep mode (full Hermes) — tap for Saving")) {
+            vm.toggleSaving()
+        }
         iconButton("paperclip", active: false, help: ar ? "إرفاق ملف أو صورة" : "Attach file or image") { openFilePicker() }
         iconButton("doc.text.magnifyingglass", active: false, help: ar ? "قراءة/فحص سريع (Scrapling)" : "Quick read (Scrapling)") { vm.applySpiderPrefix() }
         iconButton(vm.withScreenshot ? "eye.fill" : "eye.slash", active: vm.withScreenshot, help: ar ? "رؤية الشاشة" : "See screen") { vm.setWithScreenshot(!vm.withScreenshot) }

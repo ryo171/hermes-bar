@@ -58,8 +58,13 @@ final class HermesClient {
                              reasoningEffort: String?,
                              stream: Bool,
                              sessionId: String?,
-                             includeSystem: Bool) -> URLRequest? {
-        guard let url = URL(string: "\(host)/v1/chat/completions") else { return nil }
+                             includeSystem: Bool,
+                             apiKey: String?,
+                             model: String) -> URLRequest? {
+        // `host` may already include the /v1 path (direct providers); only append
+        // the endpoint, not a duplicate /v1.
+        let base = host.hasSuffix("/v1") ? host : "\(host)/v1"
+        guard let url = URL(string: "\(base)/chat/completions") else { return nil }
 
         let systemPrompt = """
         Format every answer as a rich GitHub-Flavored Markdown message:
@@ -76,7 +81,7 @@ final class HermesClient {
         messages.append(contentsOf: conversation)
 
         var payload: [String: Any] = [
-            "model": "hermes-agent",
+            "model": model,
             "messages": messages,
             "stream": stream
         ]
@@ -89,7 +94,8 @@ final class HermesClient {
         req.timeoutInterval = 300
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-        req.setValue("Bearer \(Settings.shared.resolvedAPIKey())", forHTTPHeaderField: "Authorization")
+        let auth = (apiKey?.isEmpty == false ? apiKey! : Settings.shared.resolvedAPIKey())
+        req.setValue("Bearer \(auth)", forHTTPHeaderField: "Authorization")
         if let sid = sessionId, !sid.isEmpty {
             req.setValue(sid, forHTTPHeaderField: "X-Hermes-Session-Id")
         }
@@ -103,6 +109,8 @@ final class HermesClient {
                    reasoningEffort: String? = nil,
                    sessionId: String? = nil,
                    includeSystem: Bool = true,
+                   apiKey: String? = nil,
+                   model: String = "hermes-agent",
                    onDelta: @escaping (String) -> Void,
                    onSession: ((String) -> Void)? = nil,
                    onDone: @escaping (Error?) -> Void) -> Task<Void, Never> {
@@ -113,7 +121,9 @@ final class HermesClient {
                                     reasoningEffort: reasoningEffort,
                                     stream: true,
                                     sessionId: sessionId,
-                                    includeSystem: includeSystem) else {
+                                    includeSystem: includeSystem,
+                                    apiKey: apiKey,
+                                    model: model) else {
             DispatchQueue.main.async { onDone(ClientError.notReachable) }
             return Task {}
         }

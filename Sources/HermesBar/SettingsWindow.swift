@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 final class SettingsWindowController: NSWindowController {
     convenience init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 440, height: 670),
+            contentRect: NSRect(x: 0, y: 0, width: 440, height: 780),
             styleMask: [.titled, .closable],
             backing: .buffered, defer: false)
         window.title = "Hermes Bar"
@@ -55,6 +55,9 @@ final class SettingsModel: ObservableObject {
     @Published var layoutName: String { didSet { commit() } }
     @Published var iconStyle: String { didSet { commit() } }
     @Published var serverManagedSessions: Bool { didSet { commit() } }
+    @Published var savingModel: String { didSet { commit() } }
+    @Published var deepModel: String { didSet { commit() } }
+    @Published var openRouterKey: String { didSet { commit() } }
 
     init() {
         let s = Settings.shared
@@ -66,6 +69,9 @@ final class SettingsModel: ObservableObject {
         layoutName = s.layoutName
         iconStyle = s.iconStyle
         serverManagedSessions = s.serverManagedSessions
+        savingModel = s.savingModel
+        deepModel = s.deepModel
+        openRouterKey = s.openRouterKey
     }
 
     private func commit() {
@@ -78,6 +84,9 @@ final class SettingsModel: ObservableObject {
         s.layoutName = layoutName
         s.iconStyle = iconStyle
         s.serverManagedSessions = serverManagedSessions
+        s.savingModel = savingModel
+        s.deepModel = deepModel
+        s.openRouterKey = openRouterKey
         s.save()
     }
 }
@@ -210,6 +219,25 @@ struct SettingsView: View {
                              : "Make panel chats real Hermes sessions you can continue in Desktop. Turn off for generic OpenAI hosts.")
             }
 
+            // Model per mode (Saving = direct/cheap, Deep = Hermes agent)
+            row(ar ? "موديل التوفير" : "Saving model") {
+                TextField("provider/model:free", text: $model.savingModel)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 220)
+                    .help(ar ? "الموديل المباشر لوضع التوفير (رخيص/مجاني عبر OpenRouter)."
+                             : "Direct model for Saving mode (cheap/free via OpenRouter).")
+            }
+            row(ar ? "موديل العميق" : "Deep model") {
+                TextField(ar ? "اتركه فاضي = افتراضي هيرميس" : "empty = Hermes default", text: $model.deepModel)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 220)
+            }
+            row(ar ? "مفتاح OpenRouter" : "OpenRouter key") {
+                SecureField(ar ? "فاضي = من ~/.hermes/.env" : "empty = read from ~/.hermes/.env", text: $model.openRouterKey)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 220)
+            }
+
             Divider()
 
             Text(ar
@@ -221,7 +249,7 @@ struct SettingsView: View {
             Spacer()
         }
         .padding(24)
-        .frame(width: 440, height: 670, alignment: .topLeading)
+        .frame(width: 440, height: 780, alignment: .topLeading)
         .environment(\.layoutDirection, ar ? .rightToLeft : .leftToRight)
     }
 

@@ -52,6 +52,13 @@ final class Settings: Codable {
     var layoutName: String = "classic"
     var iconStyle: String = "winged"
     var serverManagedSessions: Bool = true   // use X-Hermes-Session-Id (Hermes holds history)
+
+    // Saving mode: talk directly to a cheap/free model (no Hermes agent overhead).
+    var directHost: String = "https://openrouter.ai/api/v1"
+    var savingModel: String = "nvidia/nemotron-3-ultra-550b-a55b:free"
+    var deepModel: String = ""               // empty → "hermes-agent" (Hermes decides)
+    var openRouterKey: String = ""           // empty → resolved from ~/.hermes/.env
+
     var host: String = "http://localhost:8642"
     var apiKey: String = ""     // empty → resolved from ~/.hermes/.env at request time
     var captureFullScreen: Bool = true
@@ -68,7 +75,9 @@ final class Settings: Codable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case language, themeName, hotKey, newWindowHotKey, layoutName, iconStyle, serverManagedSessions, host, apiKey, captureFullScreen
+        case language, themeName, hotKey, newWindowHotKey, layoutName, iconStyle, serverManagedSessions
+        case directHost, savingModel, deepModel, openRouterKey
+        case host, apiKey, captureFullScreen
     }
 
     init() {}
@@ -85,6 +94,10 @@ final class Settings: Codable {
         layoutName = try c.decodeIfPresent(String.self, forKey: .layoutName) ?? "classic"
         iconStyle = try c.decodeIfPresent(String.self, forKey: .iconStyle) ?? "winged"
         serverManagedSessions = try c.decodeIfPresent(Bool.self, forKey: .serverManagedSessions) ?? true
+        directHost = try c.decodeIfPresent(String.self, forKey: .directHost) ?? "https://openrouter.ai/api/v1"
+        savingModel = try c.decodeIfPresent(String.self, forKey: .savingModel) ?? "nvidia/nemotron-3-ultra-550b-a55b:free"
+        deepModel = try c.decodeIfPresent(String.self, forKey: .deepModel) ?? ""
+        openRouterKey = try c.decodeIfPresent(String.self, forKey: .openRouterKey) ?? ""
         host = try c.decodeIfPresent(String.self, forKey: .host) ?? "http://localhost:8642"
         apiKey = try c.decodeIfPresent(String.self, forKey: .apiKey) ?? ""
         captureFullScreen = try c.decodeIfPresent(Bool.self, forKey: .captureFullScreen) ?? true
@@ -110,16 +123,26 @@ final class Settings: Codable {
     // else fall back to Hermes' documented local-dev default.
     func resolvedAPIKey() -> String {
         if !apiKey.isEmpty { return apiKey }
+        return envValue(forKeys: ["API_SERVER_KEY"]) ?? "change-me-local-dev"
+    }
+
+    // The OpenRouter key for Saving (direct) mode: explicit setting wins, else
+    // read it from ~/.hermes/.env.
+    func resolvedOpenRouterKey() -> String {
+        if !openRouterKey.isEmpty { return openRouterKey }
+        return envValue(forKeys: ["OPENROUTER_API_KEY", "OPENROUTER_KEY"]) ?? ""
+    }
+
+    private func envValue(forKeys keys: [String]) -> String? {
         let envPath = (Settings.hermesDir as NSString).appendingPathComponent(".env")
-        if let text = try? String(contentsOfFile: envPath, encoding: .utf8) {
-            for raw in text.split(separator: "\n") {
-                let line = raw.trimmingCharacters(in: .whitespaces)
-                if line.hasPrefix("API_SERVER_KEY=") {
-                    return String(line.dropFirst("API_SERVER_KEY=".count))
-                        .trimmingCharacters(in: CharacterSet(charactersIn: "\"' "))
-                }
+        guard let text = try? String(contentsOfFile: envPath, encoding: .utf8) else { return nil }
+        for raw in text.split(separator: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            for key in keys where line.hasPrefix(key + "=") {
+                return String(line.dropFirst(key.count + 1))
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "\"' "))
             }
         }
-        return "change-me-local-dev"
+        return nil
     }
 }
