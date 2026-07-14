@@ -6,42 +6,26 @@ import Carbon.HIToolbox
 // Accessibility permission.
 final class GlobalHotKey {
     private var hotKeyRef: EventHotKeyRef?
-    private var eventHandler: EventHandlerRef?
-    private var handler: (() -> Void)?
     private let signature: OSType = 0x484D4253   // 'HMBS'
     private let id: UInt32
+
+    // ONE shared Carbon handler dispatches to every registered hotkey by id.
+    // Per-instance handlers used to chain, and the last-installed one swallowed
+    // the others' events (which broke the second hotkey). A single dispatcher
+    // keyed by id fixes that completely.
+    private static var handlers: [UInt32: () -> Void] = [:]
+    private static var sharedInstalled = false
 
     init(id: UInt32 = 1) { self.id = id }
 
     func register(keyCode: UInt32, modifiers: UInt32, handler: @escaping () -> Void) {
         unregister()
-        self.handler = handler
-
-        // Install the application-level event handler once.
-        var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
-                                      eventKind: OSType(kEventHotKeyPressed))
-        let selfPtr = Unmanaged.passUnretained(self).toOpaque()
-        let installStatus = InstallEventHandler(GetApplicationEventTarget(), { (_, event, userData) -> OSStatus in
-            guard let userData = userData, let event = event else { return noErr }
-            let me = Unmanaged<GlobalHotKey>.fromOpaque(userData).takeUnretainedValue()
-            var hkID = EventHotKeyID()
-            GetEventParameter(event, EventParamName(kEventParamDirectObject),
-                              EventParamType(typeEventHotKeyID), nil,
-                              MemoryLayout<EventHotKeyID>.size, nil, &hkID)
-            if hkID.id == me.id {
-                NSLog("[HermesBar] hotkey FIRED id=\(me.id)")
-                DispatchQueue.main.async { me.handler?() }
-                return noErr
-            }
-            // Not this instance's hotkey — pass it on so OTHER installed handlers
-            // (e.g. the second global hotkey) can process it instead of us eating it.
-            return OSStatus(eventNotHandledErr)
-        }, 1, &eventType, selfPtr, &eventHandler)
-
+        GlobalHotKey.installSharedHandler()
+        GlobalHotKey.handlers[id] = handler
         let hotKeyID = EventHotKeyID(signature: signature, id: id)
-        let regStatus = RegisterEventHotKey(keyCode, modifiers, hotKeyID,
-                                            GetApplicationEventTarget(), 0, &hotKeyRef)
-        NSLog("[HermesBar] hotkey register id=\(id) keyCode=\(keyCode) mods=\(modifiers) install=\(installStatus) register=\(regStatus) ref=\(hotKeyRef != nil)")
+        let status = RegisterEventHotKey(keyCode, modifiers, hotKeyID,
+                                         GetApplicationEventTarget(), 0, &hotKeyRef)
+        NSLog("[HermesBar] hotkey register id=\(id) keyCode=\(keyCode) mods=\(modifiers) register=\(status) ref=\(hotKeyRef != nil)")
     }
 
     func unregister() {
@@ -49,10 +33,26 @@ final class GlobalHotKey {
             UnregisterEventHotKey(ref)
             hotKeyRef = nil
         }
-        if let h = eventHandler {
-            RemoveEventHandler(h)
-            eventHandler = nil
-        }
+        GlobalHotKey.handlers[id] = nil
+    }
+
+    private static func installSharedHandler() {
+        guard !sharedInstalled else { return }
+        sharedInstalled = true
+        var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
+                                      eventKind: OSType(kEventHotKeyPressed))
+        InstallEventHandler(GetApplicationEventTarget(), { (_, event, _) -> OSStatus in
+            guard let event = event else { return noErr }
+            var hkID = EventHotKeyID()
+            GetEventParameter(event, EventParamName(kEventParamDirectObject),
+                              EventParamType(typeEventHotKeyID), nil,
+                              MemoryLayout<EventHotKeyID>.size, nil, &hkID)
+            if let h = GlobalHotKey.handlers[hkID.id] {
+                NSLog("[HermesBar] hotkey FIRED id=\(hkID.id)")
+                DispatchQueue.main.async { h() }
+            }
+            return noErr
+        }, 1, &eventType, nil, nil)
     }
 
     deinit { unregister() }
