@@ -31,8 +31,11 @@ final class GlobalHotKey {
             if hkID.id == me.id {
                 NSLog("[HermesBar] hotkey FIRED id=\(me.id)")
                 DispatchQueue.main.async { me.handler?() }
+                return noErr
             }
-            return noErr
+            // Not this instance's hotkey — pass it on so OTHER installed handlers
+            // (e.g. the second global hotkey) can process it instead of us eating it.
+            return OSStatus(eventNotHandledErr)
         }, 1, &eventType, selfPtr, &eventHandler)
 
         let hotKeyID = EventHotKeyID(signature: signature, id: id)
