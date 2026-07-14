@@ -34,6 +34,24 @@ final class HermesClient {
         }.resume()
     }
 
+    // Fetch the available model ids from an OpenAI-compatible provider (GET /v1/models).
+    func fetchModels(host: String, apiKey: String, _ completion: @escaping ([String]) -> Void) {
+        let base = host.hasSuffix("/v1") ? host : "\(host)/v1"
+        guard let url = URL(string: "\(base)/models") else { DispatchQueue.main.async { completion([]) }; return }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 15
+        if !apiKey.isEmpty { req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization") }
+        URLSession.shared.dataTask(with: req) { data, _, _ in
+            var ids: [String] = []
+            if let data = data,
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let arr = json["data"] as? [[String: Any]] {
+                ids = arr.compactMap { $0["id"] as? String }
+            }
+            DispatchQueue.main.async { completion(ids.sorted()) }
+        }.resume()
+    }
+
     // Set a human title on a Hermes session (shows in Desktop's session list).
     // Fire-and-forget PATCH /api/sessions/{id}. Best-effort — ignores failures.
     func setSessionTitle(host: String?, sessionId: String, title: String) {

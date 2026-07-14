@@ -247,6 +247,7 @@ final class AskViewModel: ObservableObject {
     private var hostForTurn = ""
     private var effortForTurn = "low"
     private var includeSystemForTurn = true
+    private var turnHasImages = false   // → route Saving mode to the vision model
     private var noteFilename: String?
 
     // Server-managed sessions: Hermes holds history in state.db (keyed by the
@@ -375,6 +376,7 @@ final class AskViewModel: ObservableObject {
     // first successful turn) we send ONLY this turn — Hermes has the rest.
     private func startTurn(text: String, images: [String], detail: String) {
         messages.append(ChatMessage(role: "user", text: text))
+        turnHasImages = !images.isEmpty
         // Saving mode is stateless (direct provider) → always send full history.
         let serverMode = !savingMode && serverManaged && sessionEstablished
         var convo: [[String: Any]] = []
@@ -444,8 +446,10 @@ final class AskViewModel: ObservableObject {
         // Route by mode: Saving → cheap direct provider; Deep → Hermes gateway.
         let s = Settings.shared
         let host = savingMode ? s.directHost : hostForTurn
-        let model = savingMode ? s.savingModel : (s.deepModel.isEmpty ? "hermes-agent" : s.deepModel)
-        let key: String? = savingMode ? s.resolvedOpenRouterKey() : nil
+        // Saving: use the vision model when the turn has an image, else the fast text model.
+        let savingM = (turnHasImages && !s.savingVisionModel.isEmpty) ? s.savingVisionModel : s.savingModel
+        let model = savingMode ? savingM : (s.deepModel.isEmpty ? "hermes-agent" : s.deepModel)
+        let key: String? = savingMode ? s.resolvedDirectKey() : nil
         let sid: String? = (!savingMode && serverManaged) ? sessionId : nil
         let useWebSearch = savingMode && webSearch   // deep mode already searches via Hermes tools
 
@@ -639,10 +643,9 @@ final class AskPanelController: NSObject, NSWindowDelegate {
     }
 
     func dismiss() {
+        // Pure hide — the conversation is preserved so the hotkey works as
+        // show/hide. Start a fresh chat with ⌘N or the New-chat button instead.
         panel?.orderOut(nil)
-        // Closing an idle window resets to a fresh chat next time it opens.
-        // If a task is still running (e.g. notify-when-done), keep the thread.
-        if !viewModel.isLoading { viewModel.newChat() }
     }
 
     func applyTheme() { viewModel.refreshFromSettings() }

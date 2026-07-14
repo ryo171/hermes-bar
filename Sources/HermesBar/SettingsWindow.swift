@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 final class SettingsWindowController: NSWindowController {
     convenience init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 440, height: 780),
+            contentRect: NSRect(x: 0, y: 0, width: 440, height: 640),
             styleMask: [.titled, .closable],
             backing: .buffered, defer: false)
         window.title = "Hermes Bar"
@@ -55,9 +55,11 @@ final class SettingsModel: ObservableObject {
     @Published var layoutName: String { didSet { commit() } }
     @Published var iconStyle: String { didSet { commit() } }
     @Published var serverManagedSessions: Bool { didSet { commit() } }
+    @Published var directHost: String { didSet { commit() } }
     @Published var savingModel: String { didSet { commit() } }
+    @Published var savingVisionModel: String { didSet { commit() } }
     @Published var deepModel: String { didSet { commit() } }
-    @Published var openRouterKey: String { didSet { commit() } }
+    @Published var directKey: String { didSet { commit() } }
 
     init() {
         let s = Settings.shared
@@ -69,9 +71,11 @@ final class SettingsModel: ObservableObject {
         layoutName = s.layoutName
         iconStyle = s.iconStyle
         serverManagedSessions = s.serverManagedSessions
+        directHost = s.directHost
         savingModel = s.savingModel
+        savingVisionModel = s.savingVisionModel
         deepModel = s.deepModel
-        openRouterKey = s.openRouterKey
+        directKey = s.directKey
     }
 
     private func commit() {
@@ -84,9 +88,11 @@ final class SettingsModel: ObservableObject {
         s.layoutName = layoutName
         s.iconStyle = iconStyle
         s.serverManagedSessions = serverManagedSessions
+        s.directHost = directHost
         s.savingModel = savingModel
+        s.savingVisionModel = savingVisionModel
         s.deepModel = deepModel
-        s.openRouterKey = openRouterKey
+        s.directKey = directKey
         s.save()
     }
 }
@@ -96,10 +102,42 @@ struct SettingsView: View {
     @StateObject private var recorder = HotKeyRecorder()
     @State private var hasCustomIcon = HermesIcon.hasCustomImage()
     @State private var iconPreview: NSImage? = HermesIcon.loadCustomPreview()
+    @State private var modelList: [String] = []
+    @State private var fetchingModels = false
 
     private var ar: Bool { model.language == .arabic }
 
+    private func fetchModels() {
+        fetchingModels = true
+        HermesClient.shared.fetchModels(host: model.directHost, apiKey: Settings.shared.resolvedDirectKey()) { ids in
+            modelList = ids
+            fetchingModels = false
+        }
+    }
+
+    // A text field + a dropdown of fetched models that fills it (still editable).
+    @ViewBuilder private func modelField(_ binding: Binding<String>, placeholder: String) -> some View {
+        HStack(spacing: 6) {
+            TextField(placeholder, text: binding)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 185)
+            Menu {
+                if modelList.isEmpty {
+                    Text(ar ? "اضغط \"اجلب الموديلات\"" : "Tap \"Fetch models\"")
+                } else {
+                    ForEach(modelList, id: \.self) { m in
+                        Button(m) { binding.wrappedValue = m }
+                    }
+                }
+            } label: {
+                Image(systemName: "chevron.down.circle")
+            }
+            .frame(width: 28)
+        }
+    }
+
     var body: some View {
+        ScrollView {
         VStack(alignment: .leading, spacing: 18) {
             Text(ar ? "إعدادات Hermes Bar" : "Hermes Bar Settings")
                 .font(.system(size: 18, weight: .bold))
@@ -219,21 +257,39 @@ struct SettingsView: View {
                              : "Make panel chats real Hermes sessions you can continue in Desktop. Turn off for generic OpenAI hosts.")
             }
 
-            // Model per mode (Saving = direct/cheap, Deep = Hermes agent)
-            row(ar ? "موديل التوفير" : "Saving model") {
-                TextField("provider/model:free", text: $model.savingModel)
+            Divider()
+
+            // Saving-mode direct provider (default OpenCode Go; editable)
+            row(ar ? "مزوّد التوفير" : "Direct provider") {
+                TextField("https://opencode.ai/zen/go/v1", text: $model.directHost)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 220)
-                    .help(ar ? "الموديل المباشر لوضع التوفير (رخيص/مجاني عبر OpenRouter)."
-                             : "Direct model for Saving mode (cheap/free via OpenRouter).")
+                    .help(ar ? "رابط المزوّد المتوافق مع OpenAI لوضع التوفير. غيّره للرجوع لـOpenRouter."
+                             : "OpenAI-compatible base URL for Saving mode. Change it to switch back to OpenRouter.")
+            }
+            row(ar ? "مفتاح المزوّد" : "Provider key") {
+                SecureField(ar ? "فاضي = من ~/.hermes/.env" : "empty = read from ~/.hermes/.env", text: $model.directKey)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 220)
+            }
+            row(ar ? "الموديلات" : "Models") {
+                Button(fetchingModels ? (ar ? "يجلب…" : "Fetching…") : (ar ? "اجلب الموديلات" : "Fetch models")) {
+                    fetchModels()
+                }
+                .disabled(fetchingModels)
+                if !modelList.isEmpty {
+                    Text(ar ? "\(modelList.count) موديل" : "\(modelList.count) models")
+                        .font(.system(size: 11)).foregroundColor(.secondary)
+                }
+            }
+            row(ar ? "موديل التوفير (نصّي)" : "Saving model (text)") {
+                modelField($model.savingModel, placeholder: "deepseek-v4-flash")
+            }
+            row(ar ? "موديل الرؤية" : "Vision model") {
+                modelField($model.savingVisionModel, placeholder: ar ? "للصور — فاضي = نفس النصّي" : "for images — empty = same as text")
             }
             row(ar ? "موديل العميق" : "Deep model") {
                 TextField(ar ? "اتركه فاضي = افتراضي هيرميس" : "empty = Hermes default", text: $model.deepModel)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 220)
-            }
-            row(ar ? "مفتاح OpenRouter" : "OpenRouter key") {
-                SecureField(ar ? "فاضي = من ~/.hermes/.env" : "empty = read from ~/.hermes/.env", text: $model.openRouterKey)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 220)
             }
@@ -245,11 +301,11 @@ struct SettingsView: View {
                  : "Changes save automatically. Make sure Hermes is running: hermes gateway")
                 .font(.system(size: 12))
                 .foregroundColor(.secondary)
-
-            Spacer()
         }
         .padding(24)
-        .frame(width: 440, height: 780, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .frame(width: 440, height: 640)
         .environment(\.layoutDirection, ar ? .rightToLeft : .leftToRight)
     }
 
