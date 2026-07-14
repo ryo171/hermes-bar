@@ -21,7 +21,7 @@ final class GlobalHotKey {
         var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
                                       eventKind: OSType(kEventHotKeyPressed))
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
-        InstallEventHandler(GetApplicationEventTarget(), { (_, event, userData) -> OSStatus in
+        let installStatus = InstallEventHandler(GetApplicationEventTarget(), { (_, event, userData) -> OSStatus in
             guard let userData = userData, let event = event else { return noErr }
             let me = Unmanaged<GlobalHotKey>.fromOpaque(userData).takeUnretainedValue()
             var hkID = EventHotKeyID()
@@ -29,14 +29,16 @@ final class GlobalHotKey {
                               EventParamType(typeEventHotKeyID), nil,
                               MemoryLayout<EventHotKeyID>.size, nil, &hkID)
             if hkID.id == me.id {
+                NSLog("[HermesBar] hotkey FIRED id=\(me.id)")
                 DispatchQueue.main.async { me.handler?() }
             }
             return noErr
         }, 1, &eventType, selfPtr, &eventHandler)
 
         let hotKeyID = EventHotKeyID(signature: signature, id: id)
-        RegisterEventHotKey(keyCode, modifiers, hotKeyID,
-                            GetApplicationEventTarget(), 0, &hotKeyRef)
+        let regStatus = RegisterEventHotKey(keyCode, modifiers, hotKeyID,
+                                            GetApplicationEventTarget(), 0, &hotKeyRef)
+        NSLog("[HermesBar] hotkey register id=\(id) keyCode=\(keyCode) mods=\(modifiers) install=\(installStatus) register=\(regStatus) ref=\(hotKeyRef != nil)")
     }
 
     func unregister() {

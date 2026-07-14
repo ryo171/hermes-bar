@@ -115,18 +115,28 @@ struct SettingsView: View {
         }
     }
 
-    // A text field + a dropdown of fetched models that fills it (still editable).
+    // A text field + a dropdown of fetched models that fills it. Type first letters
+    // in the field to FILTER the dropdown (handy with 300+ models).
     @ViewBuilder private func modelField(_ binding: Binding<String>, placeholder: String) -> some View {
+        let q = binding.wrappedValue.lowercased()
+        let matches = q.isEmpty ? modelList : modelList.filter { $0.lowercased().contains(q) }
+        let shown = Array(matches.prefix(60))
         HStack(spacing: 6) {
             TextField(placeholder, text: binding)
                 .textFieldStyle(.roundedBorder)
                 .frame(width: 185)
+                .help(ar ? "اكتب أول حروف الموديل لتصفية القائمة" : "Type the first letters to filter the list")
             Menu {
                 if modelList.isEmpty {
                     Text(ar ? "اضغط \"اجلب الموديلات\"" : "Tap \"Fetch models\"")
+                } else if shown.isEmpty {
+                    Text(ar ? "لا مطابقات" : "No matches")
                 } else {
-                    ForEach(modelList, id: \.self) { m in
+                    ForEach(shown, id: \.self) { m in
                         Button(m) { binding.wrappedValue = m }
+                    }
+                    if matches.count > shown.count {
+                        Text(ar ? "…اكتب أكثر للتصفية" : "…type more to narrow")
                     }
                 }
             } label: {
