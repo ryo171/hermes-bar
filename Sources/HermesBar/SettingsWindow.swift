@@ -52,6 +52,7 @@ final class SettingsModel: ObservableObject {
     @Published var host: String { didSet { commit() } }
     @Published var hotKey: HotKeyCombo { didSet { commit() } }
     @Published var newWindowHotKey: HotKeyCombo { didSet { commit() } }
+    @Published var closeHotKey: HotKeyCombo { didSet { commit() } }
     @Published var layoutName: String { didSet { commit() } }
     @Published var iconStyle: String { didSet { commit() } }
     @Published var serverManagedSessions: Bool { didSet { commit() } }
@@ -68,6 +69,7 @@ final class SettingsModel: ObservableObject {
         host = s.host
         hotKey = s.hotKey
         newWindowHotKey = s.newWindowHotKey
+        closeHotKey = s.closeHotKey
         layoutName = s.layoutName
         iconStyle = s.iconStyle
         serverManagedSessions = s.serverManagedSessions
@@ -85,6 +87,7 @@ final class SettingsModel: ObservableObject {
         s.host = host
         s.hotKey = hotKey
         s.newWindowHotKey = newWindowHotKey
+        s.closeHotKey = closeHotKey
         s.layoutName = layoutName
         s.iconStyle = iconStyle
         s.serverManagedSessions = serverManagedSessions
@@ -249,6 +252,25 @@ struct SettingsView: View {
                         recorder.start()
                     }
                     .disabled(recorder.isRecording)
+                }
+            }
+
+            // Close-conversation hotkey
+            row(ar ? "إغلاق المحادثة" : "Close chat") {
+                HStack(spacing: 10) {
+                    Text(model.closeHotKey.displayString)
+                        .font(.system(size: 15, weight: .semibold, design: .rounded))
+                        .padding(.horizontal, 12).padding(.vertical, 6)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.15)))
+
+                    Button(recorder.isRecording
+                           ? (ar ? "اضغط أي مفتاح…" : "Press keys…")
+                           : (ar ? "تسجيل" : "Record")) {
+                        recorder.onCapture = { combo in model.closeHotKey = combo }
+                        recorder.start()
+                    }
+                    .disabled(recorder.isRecording)
+                    .help(ar ? "ينهي المحادثة ويخفي النافذة — الاستدعاء الجاي يطلع فاضي" : "Ends the chat and hides — next summon is empty")
                 }
             }
 

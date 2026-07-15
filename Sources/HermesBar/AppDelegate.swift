@@ -5,6 +5,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var statusItem: NSStatusItem!
     private let hotKey = GlobalHotKey(id: 1)
     private let newWindowHotKey = GlobalHotKey(id: 2)
+    private let closeHotKey = GlobalHotKey(id: 3)
     private var panelController: AskPanelController?
     private var extraPanels: [AskPanelController] = []
     private weak var pendingResultController: AskPanelController?
@@ -138,6 +139,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         newWindowHotKey.register(keyCode: winCombo.keyCode, modifiers: winCombo.carbonModifiers) { [weak self] in
             self?.spawnWindow()
         }
+        let closeCombo = Settings.shared.closeHotKey
+        closeHotKey.register(keyCode: closeCombo.keyCode, modifiers: closeCombo.carbonModifiers) { [weak self] in
+            self?.closeConversation()
+        }
+    }
+
+    // Close = end the conversation(s) in the visible window(s) and hide them, so
+    // the next summon starts clean. (Show/hide keeps the chat; this clears it.)
+    private func closeConversation() {
+        let visible = allPanels.filter { $0.isVisible }
+        let targets = visible.isEmpty ? allPanels : visible
+        targets.forEach { $0.endConversationAndHide() }
     }
 
     @objc private func settingsChanged() {
@@ -194,15 +207,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         c.present()
     }
 
+    // Every HermesBar window (primary + spawned).
+    private var allPanels: [AskPanelController] {
+        var a = extraPanels
+        if let p = panelController { a.append(p) }
+        return a
+    }
+
+    // Show/hide hotkey: manage the windows that ALREADY exist — never spawn a new
+    // one from nothing (that's the New-window hotkey's job). If any window is
+    // visible, hide them all; if all are hidden, bring them back; if none exist,
+    // open one so the hotkey isn't a dead key.
     private func togglePanel() {
-        let c = ensureController()
-        if c.isVisible { c.dismiss() } else { c.present() }
+        let panels = allPanels
+        let visible = panels.filter { $0.isVisible }
+        if !visible.isEmpty {
+            visible.forEach { $0.dismiss() }
+        } else if !panels.isEmpty {
+            panels.forEach { $0.present() }
+        } else {
+            ensureController().present()
+        }
     }
 
     // A second, fully independent Hermes window: its own conversation and thread,
     // same local gateway. Independent requests → no effect on answer quality.
     @objc private func spawnWindow() {
-        extraPanels.removeAll { !$0.isVisible }   // drop closed ones so they don't pile up
         let c = AskPanelController()
         c.setScreenshot(false)
         extraPanels.append(c)

@@ -49,6 +49,8 @@ final class Settings: Codable {
     var hotKey: HotKeyCombo = .default
     var newWindowHotKey: HotKeyCombo = HotKeyCombo(keyCode: UInt32(kVK_ANSI_N),
                                                    cmd: true, shift: true, option: false, control: false)
+    var closeHotKey: HotKeyCombo = HotKeyCombo(keyCode: UInt32(kVK_ANSI_W),
+                                               cmd: true, shift: false, option: true, control: false)
     var layoutName: String = "classic"
     var iconStyle: String = "winged"
     var serverManagedSessions: Bool = true   // use X-Hermes-Session-Id (Hermes holds history)
@@ -76,7 +78,7 @@ final class Settings: Codable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case language, themeName, hotKey, newWindowHotKey, layoutName, iconStyle, serverManagedSessions
+        case language, themeName, hotKey, newWindowHotKey, closeHotKey, layoutName, iconStyle, serverManagedSessions
         case directHost, savingModel, savingVisionModel, deepModel, directKey
         case host, apiKey, captureFullScreen
     }
@@ -92,6 +94,8 @@ final class Settings: Codable {
         hotKey = try c.decodeIfPresent(HotKeyCombo.self, forKey: .hotKey) ?? .default
         newWindowHotKey = try c.decodeIfPresent(HotKeyCombo.self, forKey: .newWindowHotKey)
             ?? HotKeyCombo(keyCode: UInt32(kVK_ANSI_N), cmd: true, shift: true, option: false, control: false)
+        closeHotKey = try c.decodeIfPresent(HotKeyCombo.self, forKey: .closeHotKey)
+            ?? HotKeyCombo(keyCode: UInt32(kVK_ANSI_W), cmd: true, shift: false, option: true, control: false)
         layoutName = try c.decodeIfPresent(String.self, forKey: .layoutName) ?? "classic"
         iconStyle = try c.decodeIfPresent(String.self, forKey: .iconStyle) ?? "winged"
         serverManagedSessions = try c.decodeIfPresent(Bool.self, forKey: .serverManagedSessions) ?? true

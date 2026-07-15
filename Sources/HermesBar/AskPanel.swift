@@ -451,7 +451,8 @@ final class AskViewModel: ObservableObject {
         let model = savingMode ? savingM : (s.deepModel.isEmpty ? "hermes-agent" : s.deepModel)
         let key: String? = savingMode ? s.resolvedDirectKey() : nil
         let sid: String? = (!savingMode && serverManaged) ? sessionId : nil
-        let useWebSearch = savingMode && webSearch   // deep mode already searches via Hermes tools
+        // Web plugin is an OpenRouter feature; sending it to other providers can 400.
+        let useWebSearch = savingMode && webSearch && host.lowercased().contains("openrouter")
 
         currentTask = HermesClient.shared.askStream(
             host: host,
@@ -645,6 +646,13 @@ final class AskPanelController: NSObject, NSWindowDelegate {
     func dismiss() {
         // Pure hide — the conversation is preserved so the hotkey works as
         // show/hide. Start a fresh chat with ⌘N or the New-chat button instead.
+        panel?.orderOut(nil)
+    }
+
+    // Close hotkey: end the conversation (archive + clear) and hide, so the next
+    // summon is a clean, empty chat.
+    func endConversationAndHide() {
+        viewModel.newChat()
         panel?.orderOut(nil)
     }
 

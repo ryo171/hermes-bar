@@ -160,7 +160,12 @@ final class HermesClient {
                         await MainActor.run { onSession?(sid) }
                     }
                     if !(200...299).contains(http.statusCode) {
-                        await MainActor.run { onDone(ClientError.badStatus(http.statusCode, "")) }
+                        var body = ""
+                        for try await line in bytes.lines {
+                            body += line
+                            if body.count > 600 { break }
+                        }
+                        await MainActor.run { onDone(ClientError.badStatus(http.statusCode, String(body.prefix(600)))) }
                         return
                     }
                 }
