@@ -67,7 +67,19 @@ final class Settings: Codable {
     var apiKey: String = ""     // empty → resolved from ~/.hermes/.env at request time
     var captureFullScreen: Bool = true
 
+    // Non-destructive icon manager: ids of control-row icons the user has HIDDEN.
+    // Nothing is ever deleted — hiding just removes it from the panel; clearing the
+    // set restores it. See PanelIcon.all for the catalog.
+    var hiddenIcons: [String] = []
+
     var theme: Theme { Theme.byName(themeName) }
+
+    func isIconHidden(_ id: String) -> Bool { hiddenIcons.contains(id) }
+    func setIcon(_ id: String, hidden: Bool) {
+        var set = Set(hiddenIcons)
+        if hidden { set.insert(id) } else { set.remove(id) }
+        hiddenIcons = Array(set)
+    }
 
     // MARK: - Persistence
 
@@ -81,7 +93,7 @@ final class Settings: Codable {
     private enum CodingKeys: String, CodingKey {
         case language, themeName, hotKey, newWindowHotKey, closeHotKey, layoutName, iconStyle, serverManagedSessions
         case directHost, savingModel, savingVisionModel, deepModel, directKey, searchApiKey
-        case host, apiKey, captureFullScreen
+        case host, apiKey, captureFullScreen, hiddenIcons
     }
 
     init() {}
@@ -109,6 +121,7 @@ final class Settings: Codable {
         host = try c.decodeIfPresent(String.self, forKey: .host) ?? "http://localhost:8642"
         apiKey = try c.decodeIfPresent(String.self, forKey: .apiKey) ?? ""
         captureFullScreen = try c.decodeIfPresent(Bool.self, forKey: .captureFullScreen) ?? true
+        hiddenIcons = try c.decodeIfPresent([String].self, forKey: .hiddenIcons) ?? []
     }
 
     static func load() -> Settings {

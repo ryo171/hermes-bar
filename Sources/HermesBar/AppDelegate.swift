@@ -101,11 +101,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         askText.target = self
         menu.addItem(askText)
 
+        menu.addItem(.separator())
+
+        // The three strict window actions, each labelled with its shortcut.
         let winKey = Settings.shared.newWindowHotKey.displayString
-        let newWindow = NSMenuItem(title: (ar ? "نافذة جديدة" : "New window") + "  (\(winKey))",
-                                   action: #selector(spawnWindow), keyEquivalent: "")
-        newWindow.target = self
-        menu.addItem(newWindow)
+        let newConvo = NSMenuItem(title: (ar ? "محادثة جديدة" : "New conversation") + "  (\(winKey))",
+                                  action: #selector(spawnWindow), keyEquivalent: "")
+        newConvo.target = self
+        menu.addItem(newConvo)
+
+        let toggleKey = Settings.shared.hotKey.displayString
+        let showHide = NSMenuItem(title: (ar ? "إظهار/إخفاء" : "Show/Hide") + "  (\(toggleKey))",
+                                  action: #selector(menuToggle), keyEquivalent: "")
+        showHide.target = self
+        menu.addItem(showHide)
+
+        let closeKey = Settings.shared.closeHotKey.displayString
+        let closeChat = NSMenuItem(title: (ar ? "إغلاق المحادثة" : "Close conversation") + "  (\(closeKey))",
+                                   action: #selector(menuClose), keyEquivalent: "")
+        closeChat.target = self
+        menu.addItem(closeChat)
 
         menu.addItem(.separator())
 
@@ -214,10 +229,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         return a
     }
 
-    // Show/hide hotkey: manage the windows that ALREADY exist — never spawn a new
-    // one from nothing (that's the New-window hotkey's job). If any window is
-    // visible, hide them all; if all are hidden, bring them back; if none exist,
-    // open one so the hotkey isn't a dead key.
+    // STRICT show/hide: only manage windows that ALREADY exist. Never creates a
+    // window — that is exclusively the New-conversation action's job. If any window
+    // is visible → hide them all; if all are hidden → bring them back; if none
+    // exist → do nothing (the key is intentionally inert until a conversation
+    // exists, so repeated presses can never spawn/duplicate windows).
     private func togglePanel() {
         let panels = allPanels
         let visible = panels.filter { $0.isVisible }
@@ -225,10 +241,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             visible.forEach { $0.dismiss() }
         } else if !panels.isEmpty {
             panels.forEach { $0.present() }
-        } else {
-            ensureController().present()
         }
+        // else: no window → no-op.
     }
+
+    // Menu wrappers for the two hotkey-driven actions (so they're discoverable).
+    @objc private func menuToggle() { togglePanel() }
+    @objc private func menuClose()  { closeConversation() }
 
     // A second, fully independent Hermes window: its own conversation and thread,
     // same local gateway. Independent requests → no effect on answer quality.

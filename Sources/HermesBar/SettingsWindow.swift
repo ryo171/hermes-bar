@@ -62,6 +62,7 @@ final class SettingsModel: ObservableObject {
     @Published var deepModel: String { didSet { commit() } }
     @Published var directKey: String { didSet { commit() } }
     @Published var searchApiKey: String { didSet { commit() } }
+    @Published var hiddenIcons: [String] { didSet { commit() } }
 
     init() {
         let s = Settings.shared
@@ -80,6 +81,7 @@ final class SettingsModel: ObservableObject {
         deepModel = s.deepModel
         directKey = s.directKey
         searchApiKey = s.searchApiKey
+        hiddenIcons = s.hiddenIcons
     }
 
     private func commit() {
@@ -99,6 +101,7 @@ final class SettingsModel: ObservableObject {
         s.deepModel = deepModel
         s.directKey = directKey
         s.searchApiKey = searchApiKey
+        s.hiddenIcons = hiddenIcons
         s.save()
     }
 }
@@ -119,6 +122,18 @@ struct SettingsView: View {
             modelList = ids
             fetchingModels = false
         }
+    }
+
+    // ON = icon shown, OFF = hidden. Writes to the hidden-icons set (non-destructive).
+    private func iconVisibilityBinding(_ id: String) -> Binding<Bool> {
+        Binding(
+            get: { !model.hiddenIcons.contains(id) },
+            set: { show in
+                var set = Set(model.hiddenIcons)
+                if show { set.remove(id) } else { set.insert(id) }
+                model.hiddenIcons = Array(set)
+            }
+        )
     }
 
     // A text field + a dropdown of fetched models that fills it. Type first letters
@@ -222,8 +237,8 @@ struct SettingsView: View {
                 }
             }
 
-            // Hotkey recorder
-            row(ar ? "الاختصار" : "Hotkey") {
+            // Hotkey recorder — show/hide
+            row(ar ? "إظهار/إخفاء" : "Show/Hide") {
                 HStack(spacing: 10) {
                     Text(model.hotKey.displayString)
                         .font(.system(size: 15, weight: .semibold, design: .rounded))
@@ -240,8 +255,8 @@ struct SettingsView: View {
                 }
             }
 
-            // New-window hotkey recorder
-            row(ar ? "نافذة جديدة" : "New window") {
+            // New-conversation hotkey recorder
+            row(ar ? "محادثة جديدة" : "New conversation") {
                 HStack(spacing: 10) {
                     Text(model.newWindowHotKey.displayString)
                         .font(.system(size: 15, weight: .semibold, design: .rounded))
@@ -259,7 +274,7 @@ struct SettingsView: View {
             }
 
             // Close-conversation hotkey
-            row(ar ? "إغلاق المحادثة" : "Close chat") {
+            row(ar ? "إغلاق المحادثة" : "Close conversation") {
                 HStack(spacing: 10) {
                     Text(model.closeHotKey.displayString)
                         .font(.system(size: 15, weight: .semibold, design: .rounded))
@@ -334,6 +349,28 @@ struct SettingsView: View {
                     .frame(width: 220)
                     .help(ar ? "مفتاح Tavily المجاني — يفعّل زر 🌐 مع أي مزوّد (حتى OpenCode Go)."
                              : "Free Tavily key — enables the 🌐 button with any provider (even OpenCode Go).")
+            }
+
+            Divider()
+
+            // Icon manager — hide/show panel icons (non-destructive; toggle back on anytime).
+            Text(ar ? "أيقونات اللوحة" : "Panel icons")
+                .font(.system(size: 15, weight: .semibold))
+            Text(ar ? "أخفِ أي أيقونة لا تحتاجها — تقدر ترجّعها بأي وقت (ما يُحذف شيء)."
+                    : "Hide any icon you don't need — restore it anytime (nothing is deleted).")
+                .font(.system(size: 11)).foregroundColor(.secondary)
+            VStack(spacing: 6) {
+                ForEach(PanelIcon.all) { icon in
+                    HStack(spacing: 10) {
+                        Image(systemName: icon.symbol)
+                            .font(.system(size: 13))
+                            .frame(width: 22)
+                            .foregroundColor(.secondary)
+                        Text(icon.title(ar)).font(.system(size: 13))
+                        Spacer()
+                        Toggle("", isOn: iconVisibilityBinding(icon.id)).labelsHidden()
+                    }
+                }
             }
 
             Divider()

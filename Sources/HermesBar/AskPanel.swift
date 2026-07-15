@@ -24,6 +24,74 @@ extension Notification.Name {
     static let hbPendingResult = Notification.Name("hb.pendingResult")
 }
 
+// MARK: - Control-icon catalog (shared by the panel and the Settings manager)
+
+// A stable id + label for every icon in the control row, so the Settings
+// "icon manager" can hide/show them non-destructively (nothing is ever deleted).
+struct PanelIcon: Identifiable {
+    let id: String
+    let symbol: String
+    let labelAr: String
+    let labelEn: String
+    func title(_ ar: Bool) -> String { ar ? labelAr : labelEn }
+
+    // Order matters — this is the display order in the row and the manager.
+    static let all: [PanelIcon] = [
+        PanelIcon(id: "newchat", symbol: "square.and.pencil", labelAr: "محادثة جديدة", labelEn: "New chat"),
+        PanelIcon(id: "mode",    symbol: "brain",             labelAr: "توفير/عميق",  labelEn: "Saving/Deep"),
+        PanelIcon(id: "web",     symbol: "globe",             labelAr: "بحث ويب",      labelEn: "Web search"),
+        PanelIcon(id: "attach",  symbol: "paperclip",         labelAr: "إرفاق",        labelEn: "Attach"),
+        PanelIcon(id: "scrape",  symbol: "doc.text.magnifyingglass", labelAr: "قراءة سريعة", labelEn: "Quick read"),
+        PanelIcon(id: "screen",  symbol: "eye",               labelAr: "رؤية الشاشة",  labelEn: "See screen"),
+        PanelIcon(id: "pin",     symbol: "pin",               labelAr: "تثبيت",        labelEn: "Pin"),
+        PanelIcon(id: "notify",  symbol: "bell",              labelAr: "إشعار",        labelEn: "Notify"),
+        PanelIcon(id: "spawn",   symbol: "plus.rectangle.on.rectangle", labelAr: "نافذة جديدة", labelEn: "New window"),
+        PanelIcon(id: "desktop", symbol: "macwindow.on.rectangle", labelAr: "هيرميس ديسكتوب", labelEn: "Hermes Desktop"),
+    ]
+}
+
+// MARK: - Reusable interaction / motion
+
+// Spring-bounce + pop on press (adapted from the "X like" reference): the control
+// scales down when pressed and springs back with a lively overshoot on release.
+struct SpringPopButtonStyle: ButtonStyle {
+    var scale: CGFloat = 0.82
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? scale : 1.0)
+            .animation(.spring(response: 0.30, dampingFraction: 0.42), value: configuration.isPressed)
+    }
+}
+
+// A continuously animated multi-colour gradient border — the "Hermes is thinking"
+// status cue (adapted from the Gemini response-gradient reference). Many colours,
+// morphing smoothly; shown only while loading, and fades out when the answer lands.
+struct ThinkingGradientBorder: View {
+    var cornerRadius: CGFloat = 18
+    var lineWidth: CGFloat = 2.2
+    private let colors: [Color] = [
+        Color(red: 0.42, green: 0.55, blue: 1.00),   // blue
+        Color(red: 0.30, green: 0.85, blue: 0.80),   // teal
+        Color(red: 0.45, green: 0.90, blue: 0.45),   // green
+        Color(red: 0.98, green: 0.80, blue: 0.35),   // amber
+        Color(red: 0.98, green: 0.55, blue: 0.45),   // coral
+        Color(red: 0.85, green: 0.50, blue: 0.95),   // violet
+        Color(red: 1.00, green: 0.60, blue: 0.80),   // pink
+    ]
+    var body: some View {
+        TimelineView(.animation) { timeline in
+            let t = timeline.date.timeIntervalSinceReferenceDate
+            let angle = Angle(degrees: (t * 90).truncatingRemainder(dividingBy: 360))
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .strokeBorder(
+                    AngularGradient(gradient: Gradient(colors: colors + [colors[0]]),
+                                    center: .center, angle: angle),
+                    lineWidth: lineWidth)
+                .blur(radius: 0.4)
+        }
+    }
+}
+
 enum Notifier {
     static func requestAuth() {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
@@ -204,6 +272,26 @@ final class AskViewModel: ObservableObject {
     @Published var isArabic: Bool = Settings.shared.language == .arabic
     @Published var layout: PanelLayout = PanelLayout(rawValue: Settings.shared.layoutName) ?? .classic
 
+    // Per-message rating (1 = 👍, -1 = 👎). Tapping a thumb also queues a light
+    // preference note that rides along with the NEXT turn, nudging Hermes' style.
+    @Published var ratings: [UUID: Int] = [:]
+    private var pendingFeedbackNote: String?
+
+    func rate(_ id: UUID, up: Bool) {
+        // Toggle off if the same thumb is tapped again.
+        if ratings[id] == (up ? 1 : -1) {
+            ratings[id] = nil
+            pendingFeedbackNote = nil
+            return
+        }
+        ratings[id] = up ? 1 : -1
+        pendingFeedbackNote = up
+            ? (isArabic ? "(ملاحظة تفضيل: ردك السابق كان ممتاز — استمر بنفس الأسلوب والمستوى.)"
+                        : "(Preference note: your previous answer was great — keep this style and depth.)")
+            : (isArabic ? "(ملاحظة تفضيل: ردك السابق لم يكن جيداً — حسّن الإجابة وأسلوبها في المرة الجاية.)"
+                        : "(Preference note: your previous answer wasn't good — improve the answer and its style next time.)")
+    }
+
     var onClose: (() -> Void)?
     var onTaskFinishedNotify: (() -> Void)?   // fired when a notify-worthy task completes
 
@@ -340,6 +428,9 @@ final class AskViewModel: ObservableObject {
         // HermesBar-side web search (Tavily) — makes 🌐 work with ANY provider.
         let wantsSearch = savingMode && webSearch && !Settings.shared.searchApiKey.isEmpty
         let searchKey = Settings.shared.searchApiKey
+        // A queued 👍/👎 preference note rides along with this turn, then clears.
+        let feedbackNote = pendingFeedbackNote
+        pendingFeedbackNote = nil
 
         DispatchQueue.global(qos: .userInitiated).async {
             var images: [String] = []
@@ -360,6 +451,7 @@ final class AskViewModel: ObservableObject {
             if wantsSearch, let results = HermesClient.shared.webSearchBlocking(query: q0, apiKey: searchKey) {
                 text = results + "\n\n" + text
             }
+            if let note = feedbackNote { text = note + "\n\n" + text }
             DispatchQueue.main.async {
                 self.hostForTurn = host
                 self.effortForTurn = effort
@@ -697,6 +789,7 @@ struct AskView: View {
     @State private var showAllHistory = false
     @State private var copiedMessageId: UUID?
     @State private var copiedCodeId: UUID?
+    @State private var selectableIds: Set<UUID> = []   // messages shown as selectable plain text
 
     private let historyCap = 30   // render only recent turns in the light panel
 
@@ -708,10 +801,22 @@ struct AskView: View {
             .padding(16)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(background)
+            .overlay(thinkingOverlay)
             .overlay(dropHighlight)
+            .animation(.easeInOut(duration: 0.45), value: vm.isLoading)
             .environment(\.layoutDirection, ar ? .rightToLeft : .leftToRight)
             .onExitCommand { vm.onClose?() }
             .onDrop(of: [UTType.fileURL], isTargeted: $dropTargeted) { providers in handleDrop(providers) }
+    }
+
+    // "Hermes is thinking" cue — a morphing multi-colour gradient border while a
+    // reply is being generated; fades away when the answer lands.
+    @ViewBuilder private var thinkingOverlay: some View {
+        if vm.isLoading {
+            ThinkingGradientBorder(cornerRadius: 18)
+                .allowsHitTesting(false)
+                .transition(.opacity)
+        }
     }
 
     @ViewBuilder private var layoutBody: some View {
@@ -778,9 +883,16 @@ struct AskView: View {
 
     @ViewBuilder private var background: some View {
         if t.isGlass {
-            VisualEffectBackground()
-                .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
+            // Dark frosted glass (Raycast-style): blur + a dark tint so the panel
+            // reads as deep glass regardless of the wallpaper behind it.
+            ZStack {
+                VisualEffectBackground()
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(LinearGradient(colors: [Color.black.opacity(0.44), Color.black.opacity(0.30)],
+                                         startPoint: .top, endPoint: .bottom))
+            }
+            .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.10), lineWidth: 1))
         } else {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .fill(t.background)
@@ -812,19 +924,26 @@ struct AskView: View {
         }
     }
 
+    private func iconHidden(_ id: String) -> Bool { Settings.shared.isIconHidden(id) }
+
     // The row of tool icons, reused horizontally (classic/chat), vertically (rail),
-    // or inside a popover (minimal).
+    // or inside a popover (minimal). Each icon can be hidden non-destructively from
+    // Settings → the icon manager (nothing is deleted, just hidden/restored).
     @ViewBuilder private var controlIcons: some View {
-        iconButton("square.and.pencil", active: false, help: ar ? "محادثة جديدة (⌘N)" : "New chat (⌘N)") { vm.newChat() }
-            .keyboardShortcut("n", modifiers: .command)
-        iconButton(vm.savingMode ? "leaf.fill" : "brain",
-                   active: vm.savingMode,
-                   help: vm.savingMode
-                        ? (ar ? "وضع التوفير (رخيص/مباشر) — اضغط للعميق" : "Saving mode (cheap) — tap for Deep")
-                        : (ar ? "وضع عميق (هيرميس كامل + ديسكتوب) — اضغط للتوفير" : "Deep mode (full Hermes) — tap for Saving")) {
-            vm.toggleSaving()
+        if !iconHidden("newchat") {
+            iconButton("square.and.pencil", active: false, help: ar ? "محادثة جديدة (⌘N)" : "New chat (⌘N)") { vm.newChat() }
+                .keyboardShortcut("n", modifiers: .command)
         }
-        if vm.savingMode {
+        if !iconHidden("mode") {
+            iconButton(vm.savingMode ? "leaf.fill" : "brain",
+                       active: vm.savingMode,
+                       help: vm.savingMode
+                            ? (ar ? "وضع التوفير (رخيص/مباشر) — اضغط للعميق" : "Saving mode (cheap) — tap for Deep")
+                            : (ar ? "وضع عميق (هيرميس كامل + ديسكتوب) — اضغط للتوفير" : "Deep mode (full Hermes) — tap for Saving")) {
+                vm.toggleSaving()
+            }
+        }
+        if vm.savingMode, !iconHidden("web") {
             iconButton(vm.webSearch ? "globe" : "globe.badge.chevron.backward",
                        active: vm.webSearch,
                        help: ar ? "بحث ويب في وضع التوفير (نتائج حالية · تكلفة بسيطة للبحث)"
@@ -832,15 +951,29 @@ struct AskView: View {
                 vm.toggleWebSearch()
             }
         }
-        iconButton("paperclip", active: false, help: ar ? "إرفاق ملف أو صورة" : "Attach file or image") { openFilePicker() }
-        iconButton("doc.text.magnifyingglass", active: false, help: ar ? "قراءة/فحص سريع (Scrapling)" : "Quick read (Scrapling)") { vm.applySpiderPrefix() }
-        iconButton(vm.withScreenshot ? "eye.fill" : "eye.slash", active: vm.withScreenshot, help: ar ? "رؤية الشاشة" : "See screen") { vm.setWithScreenshot(!vm.withScreenshot) }
-        iconButton(pinIcon, active: vm.pinMode != .off, help: pinHelp) { vm.cyclePinMode() }
-        iconButton(vm.notifyWhenDone ? "bell.fill" : "bell.slash", active: vm.notifyWhenDone, help: ar ? "أشعرني لما يخلّص" : "Notify when done") { vm.toggleNotify() }
-        iconButton("plus.rectangle.on.rectangle", active: false, help: ar ? "نافذة هيرميس جديدة (مستقلة)" : "New Hermes window (independent)") {
-            NotificationCenter.default.post(name: .hbSpawnWindow, object: nil)
+        if !iconHidden("attach") {
+            iconButton("paperclip", active: false, help: ar ? "إرفاق ملف أو صورة" : "Attach file or image") { openFilePicker() }
         }
-        iconButton("macwindow.on.rectangle", active: false, help: ar ? "افتح هيرميس ديسكتوب" : "Open Hermes Desktop") { openHermesDesktop() }
+        if !iconHidden("scrape") {
+            iconButton("doc.text.magnifyingglass", active: false, help: ar ? "قراءة/فحص سريع (Scrapling)" : "Quick read (Scrapling)") { vm.applySpiderPrefix() }
+        }
+        if !iconHidden("screen") {
+            iconButton(vm.withScreenshot ? "eye.fill" : "eye.slash", active: vm.withScreenshot, help: ar ? "رؤية الشاشة" : "See screen") { vm.setWithScreenshot(!vm.withScreenshot) }
+        }
+        if !iconHidden("pin") {
+            iconButton(pinIcon, active: vm.pinMode != .off, help: pinHelp) { vm.cyclePinMode() }
+        }
+        if !iconHidden("notify") {
+            iconButton(vm.notifyWhenDone ? "bell.fill" : "bell.slash", active: vm.notifyWhenDone, help: ar ? "أشعرني لما يخلّص" : "Notify when done") { vm.toggleNotify() }
+        }
+        if !iconHidden("spawn") {
+            iconButton("plus.rectangle.on.rectangle", active: false, help: ar ? "نافذة هيرميس جديدة (مستقلة)" : "New Hermes window (independent)") {
+                NotificationCenter.default.post(name: .hbSpawnWindow, object: nil)
+            }
+        }
+        if !iconHidden("desktop") {
+            iconButton("macwindow.on.rectangle", active: false, help: ar ? "افتح هيرميس ديسكتوب" : "Open Hermes Desktop") { openHermesDesktop() }
+        }
     }
 
     @ViewBuilder private var sendOrStop: some View {
@@ -890,7 +1023,7 @@ struct AskView: View {
     private func iconButton(_ name: String, active: Bool, help: String, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: name).font(.system(size: 15)).foregroundColor(active ? t.accent : t.textSecondary)
-        }.buttonStyle(.plain).help(help)
+        }.buttonStyle(SpringPopButtonStyle()).help(help)
     }
 
     private var canSend: Bool {
@@ -981,26 +1114,56 @@ struct AskView: View {
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
-                    Markdown(msg.text)
-                        .markdownTextStyle { ForegroundColor(t.textPrimary); FontSize(16) }
-                        .markdownBlockStyle(\.codeBlock) { configuration in codeBlock(configuration) }
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if selectableIds.contains(msg.id) {
+                        // Plain, fully drag-selectable text (select ANY portion, copy freely).
+                        Text(msg.text)
+                            .font(.system(size: 15))
+                            .foregroundColor(t.textPrimary)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        Markdown(msg.text)
+                            .markdownTextStyle { ForegroundColor(t.textPrimary); FontSize(16) }
+                            .markdownBlockStyle(\.codeBlock) { configuration in codeBlock(configuration) }
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                     messageActions(msg)
                 }
             }
         }
     }
 
-    // Actions shown under every finished assistant message.
+    // Icon-only action bar under every finished assistant message (Gemini-style):
+    // copy · copy-code · share · regenerate · 👍 · 👎 · more.
     private func messageActions(_ msg: ChatMessage) -> some View {
-        HStack(spacing: 8) {
-            copyButton(id: msg.id, text: msg.text)
-            if msg.text.contains("```") {
-                copyButton(id: msg.id, text: msg.text, codeOnly: true)
+        let up = vm.ratings[msg.id] == 1
+        let down = vm.ratings[msg.id] == -1
+        let copied = copiedMessageId == msg.id
+        let codeCopied = copiedCodeId == msg.id
+        return HStack(spacing: 8) {
+            iconAction(copied ? "checkmark" : "doc.on.doc",
+                       help: copied ? (ar ? "تم" : "Copied") : (ar ? "نسخ" : "Copy"),
+                       active: copied) {
+                copyToPasteboard(msg.text); flashCopy(msg.id, code: false)
             }
-            actionButton("text.badge.minus", ar ? "لخّص" : "Summarize") { vm.summarize(msg.id) }
-            actionButton("arrow.clockwise", ar ? "اسأل مرة ثانية" : "Ask again") { vm.regenerate(msg.id) }
+            if msg.text.contains("```") {
+                iconAction(codeCopied ? "checkmark" : "curlybraces",
+                           help: ar ? "نسخ الكود" : "Copy code", active: codeCopied) {
+                    copyToPasteboard(extractCode(msg.text)); flashCopy(msg.id, code: true)
+                }
+            }
+            iconAction("square.and.arrow.up", help: ar ? "مشاركة" : "Share") { shareText(msg.text) }
+            iconAction("arrow.clockwise", help: ar ? "اسأل مرة ثانية" : "Ask again") { vm.regenerate(msg.id) }
+            iconAction(up ? "hand.thumbsup.fill" : "hand.thumbsup",
+                       help: ar ? "رد ممتاز (يبلّغ هيرميس أن أعجبني)" : "Good answer", active: up) {
+                vm.rate(msg.id, up: true)
+            }
+            iconAction(down ? "hand.thumbsdown.fill" : "hand.thumbsdown",
+                       help: ar ? "رد سيئ (يبلّغ هيرميس أنه لم يعجبني)" : "Bad answer", active: down) {
+                vm.rate(msg.id, up: false)
+            }
+            moreMenu(msg)
             Spacer()
             if msg.elapsed > 0 {
                 Text(elapsedLabel(msg.elapsed)).font(.system(size: 11)).foregroundColor(t.textSecondary.opacity(0.8))
@@ -1009,32 +1172,64 @@ struct AskView: View {
         .padding(.top, 2)
     }
 
-    // A soft-cornered pill action button.
-    private func actionButton(_ icon: String, _ label: String, _ action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 4) {
-                Image(systemName: icon).font(.system(size: 11))
-                Text(label).font(.system(size: 11))
+    // The overflow menu: summarize · toggle selectable text · open in Desktop.
+    private func moreMenu(_ msg: ChatMessage) -> some View {
+        let selectable = selectableIds.contains(msg.id)
+        return Menu {
+            Button(ar ? "لخّص" : "Summarize") { vm.summarize(msg.id) }
+            Button(selectable ? (ar ? "عرض منسّق" : "Formatted view")
+                              : (ar ? "تحديد النص" : "Select text")) {
+                if selectable { selectableIds.remove(msg.id) } else { selectableIds.insert(msg.id) }
             }
-            .foregroundColor(t.textSecondary)
-            .padding(.horizontal, 9).padding(.vertical, 4)
-            .background(Capsule().fill(t.surface))
-        }.buttonStyle(.plain)
+            Button(ar ? "افتح في هيرميس ديسكتوب" : "Open in Hermes Desktop") { openHermesDesktop() }
+        } label: {
+            Image(systemName: "ellipsis").font(.system(size: 12)).foregroundColor(t.textSecondary)
+                .padding(.horizontal, 8).padding(.vertical, 5)
+                .background(Capsule().fill(t.surface))
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help(ar ? "المزيد" : "More")
+    }
+
+    // A round-pill icon button with spring-pop feedback.
+    private func iconAction(_ system: String, help: String, active: Bool = false, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: system).font(.system(size: 13))
+                .foregroundColor(active ? t.accent : t.textSecondary)
+                .frame(width: 18, height: 16)
+                .padding(.horizontal, 7).padding(.vertical, 5)
+                .background(Capsule().fill(t.surface))
+        }.buttonStyle(SpringPopButtonStyle()).help(help)
+    }
+
+    // Flash a ✓ on the copy / copy-code icon for a moment.
+    private func flashCopy(_ id: UUID, code: Bool) {
+        if code { copiedCodeId = id } else { copiedMessageId = id }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
+            if code { if copiedCodeId == id { copiedCodeId = nil } }
+            else { if copiedMessageId == id { copiedMessageId = nil } }
+        }
+    }
+
+    // Native share sheet for the answer text.
+    private func shareText(_ text: String) {
+        let picker = NSSharingServicePicker(items: [text])
+        if let view = NSApp.keyWindow?.contentView {
+            picker.show(relativeTo: .zero, of: view, preferredEdge: .minY)
+        }
     }
 
     // Copy button with a brief ✓ confirmation so you know it copied.
     private func copyButton(id: UUID, text: String, codeOnly: Bool = false) -> some View {
         let copied = (codeOnly ? copiedCodeId : copiedMessageId) == id
         let icon = copied ? "checkmark" : (codeOnly ? "curlybraces" : "doc.on.doc")
-        let label = copied ? (ar ? "تم" : "Copied")
-                           : (codeOnly ? (ar ? "نسخ الكود" : "Copy code") : (ar ? "نسخ" : "Copy"))
-        return actionButton(icon, label) {
+        let help = copied ? (ar ? "تم" : "Copied")
+                          : (codeOnly ? (ar ? "نسخ الكود" : "Copy code") : (ar ? "نسخ" : "Copy"))
+        return iconAction(icon, help: help, active: copied) {
             copyToPasteboard(codeOnly ? extractCode(text) : text)
-            if codeOnly { copiedCodeId = id } else { copiedMessageId = id }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
-                if codeOnly { if copiedCodeId == id { copiedCodeId = nil } }
-                else { if copiedMessageId == id { copiedMessageId = nil } }
-            }
+            flashCopy(id, code: codeOnly)
         }
     }
 
