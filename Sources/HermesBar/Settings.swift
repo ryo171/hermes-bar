@@ -61,6 +61,7 @@ final class Settings: Codable {
     var savingVisionModel: String = ""                         // for screenshots; empty → savingModel
     var deepModel: String = ""               // empty → "hermes-agent" (Hermes decides)
     var directKey: String = ""               // direct-provider key; empty → ~/.hermes/.env
+    var searchApiKey: String = ""            // Tavily key → web search works with ANY provider
 
     var host: String = "http://localhost:8642"
     var apiKey: String = ""     // empty → resolved from ~/.hermes/.env at request time
@@ -79,7 +80,7 @@ final class Settings: Codable {
 
     private enum CodingKeys: String, CodingKey {
         case language, themeName, hotKey, newWindowHotKey, closeHotKey, layoutName, iconStyle, serverManagedSessions
-        case directHost, savingModel, savingVisionModel, deepModel, directKey
+        case directHost, savingModel, savingVisionModel, deepModel, directKey, searchApiKey
         case host, apiKey, captureFullScreen
     }
 
@@ -104,6 +105,7 @@ final class Settings: Codable {
         savingVisionModel = try c.decodeIfPresent(String.self, forKey: .savingVisionModel) ?? ""
         deepModel = try c.decodeIfPresent(String.self, forKey: .deepModel) ?? ""
         directKey = try c.decodeIfPresent(String.self, forKey: .directKey) ?? ""
+        searchApiKey = try c.decodeIfPresent(String.self, forKey: .searchApiKey) ?? ""
         host = try c.decodeIfPresent(String.self, forKey: .host) ?? "http://localhost:8642"
         apiKey = try c.decodeIfPresent(String.self, forKey: .apiKey) ?? ""
         captureFullScreen = try c.decodeIfPresent(Bool.self, forKey: .captureFullScreen) ?? true

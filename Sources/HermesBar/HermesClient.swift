@@ -34,6 +34,41 @@ final class HermesClient {
         }.resume()
     }
 
+    // Blocking web search via Tavily (call on a background thread). Returns a
+    // compact results block to prepend to the prompt, so ANY model gets fresh
+    // info — independent of provider. Returns nil on failure / no key.
+    func webSearchBlocking(query: String, apiKey: String) -> String? {
+        guard !apiKey.isEmpty, !query.isEmpty,
+              let url = URL(string: "https://api.tavily.com/search") else { return nil }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 15
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        let payload: [String: Any] = ["api_key": apiKey, "query": query,
+                                      "max_results": 5, "search_depth": "basic"]
+        req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+
+        var out: String?
+        let sem = DispatchSemaphore(value: 0)
+        URLSession.shared.dataTask(with: req) { data, _, _ in
+            defer { sem.signal() }
+            guard let data = data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let results = json["results"] as? [[String: Any]], !results.isEmpty else { return }
+            var s = "[Recent web results — use these for anything current]\n"
+            for r in results.prefix(5) {
+                let title = (r["title"] as? String) ?? ""
+                let content = (r["content"] as? String) ?? ""
+                let link = (r["url"] as? String) ?? ""
+                s += "- \(title): \(content) (\(link))\n"
+            }
+            out = s
+        }.resume()
+        _ = sem.wait(timeout: .now() + 16)
+        return out
+    }
+
     // Fetch the available model ids from an OpenAI-compatible provider (GET /v1/models).
     func fetchModels(host: String, apiKey: String, _ completion: @escaping ([String]) -> Void) {
         let base = host.hasSuffix("/v1") ? host : "\(host)/v1"

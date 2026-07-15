@@ -337,6 +337,9 @@ final class AskViewModel: ObservableObject {
         let effort = fast ? "low" : "high"
         let detail = "high"
         let host = fast ? fastHost() : Settings.shared.host
+        // HermesBar-side web search (Tavily) — makes 🌐 work with ANY provider.
+        let wantsSearch = savingMode && webSearch && !Settings.shared.searchApiKey.isEmpty
+        let searchKey = Settings.shared.searchApiKey
 
         DispatchQueue.global(qos: .userInitiated).async {
             var images: [String] = []
@@ -353,6 +356,9 @@ final class AskViewModel: ObservableObject {
             if !pathNotes.isEmpty {
                 let label = ar ? "ملفات/مجلدات مرفقة (افتحها بأدواتك):" : "Attached files/folders (open with your tools):"
                 text += "\n\n" + label + "\n" + pathNotes.map { "- \($0)" }.joined(separator: "\n")
+            }
+            if wantsSearch, let results = HermesClient.shared.webSearchBlocking(query: q0, apiKey: searchKey) {
+                text = results + "\n\n" + text
             }
             DispatchQueue.main.async {
                 self.hostForTurn = host
@@ -451,8 +457,9 @@ final class AskViewModel: ObservableObject {
         let model = savingMode ? savingM : (s.deepModel.isEmpty ? "hermes-agent" : s.deepModel)
         let key: String? = savingMode ? s.resolvedDirectKey() : nil
         let sid: String? = (!savingMode && serverManaged) ? sessionId : nil
-        // Web plugin is an OpenRouter feature; sending it to other providers can 400.
-        let useWebSearch = savingMode && webSearch && host.lowercased().contains("openrouter")
+        // Web plugin is an OpenRouter feature; used only when there's no Tavily key
+        // (with a Tavily key we already injected results above, for any provider).
+        let useWebSearch = savingMode && webSearch && s.searchApiKey.isEmpty && host.lowercased().contains("openrouter")
 
         currentTask = HermesClient.shared.askStream(
             host: host,
@@ -688,6 +695,8 @@ struct AskView: View {
     @State private var dropTargeted = false
     @State private var showMinimalControls = false
     @State private var showAllHistory = false
+    @State private var copiedMessageId: UUID?
+    @State private var copiedCodeId: UUID?
 
     private let historyCap = 30   // render only recent turns in the light panel
 
@@ -960,7 +969,7 @@ struct AskView: View {
                         .padding(.horizontal, 12).padding(.vertical, 8)
                         .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(t.surface))
                 }
-                actionButton("doc.on.doc", ar ? "نسخ" : "Copy") { copyToPasteboard(msg.text) }
+                copyButton(id: msg.id, text: msg.text)
             }
         } else if !msg.text.isEmpty {
             VStack(alignment: .leading, spacing: 4) {
@@ -985,10 +994,10 @@ struct AskView: View {
 
     // Actions shown under every finished assistant message.
     private func messageActions(_ msg: ChatMessage) -> some View {
-        HStack(spacing: 14) {
-            actionButton("doc.on.doc", ar ? "نسخ" : "Copy") { copyToPasteboard(msg.text) }
+        HStack(spacing: 8) {
+            copyButton(id: msg.id, text: msg.text)
             if msg.text.contains("```") {
-                actionButton("curlybraces", ar ? "نسخ الكود" : "Copy code") { copyToPasteboard(extractCode(msg.text)) }
+                copyButton(id: msg.id, text: msg.text, codeOnly: true)
             }
             actionButton("text.badge.minus", ar ? "لخّص" : "Summarize") { vm.summarize(msg.id) }
             actionButton("arrow.clockwise", ar ? "اسأل مرة ثانية" : "Ask again") { vm.regenerate(msg.id) }
@@ -1000,13 +1009,33 @@ struct AskView: View {
         .padding(.top, 2)
     }
 
+    // A soft-cornered pill action button.
     private func actionButton(_ icon: String, _ label: String, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 4) {
-                Image(systemName: icon).font(.system(size: 12))
+                Image(systemName: icon).font(.system(size: 11))
                 Text(label).font(.system(size: 11))
-            }.foregroundColor(t.textSecondary)
+            }
+            .foregroundColor(t.textSecondary)
+            .padding(.horizontal, 9).padding(.vertical, 4)
+            .background(Capsule().fill(t.surface))
         }.buttonStyle(.plain)
+    }
+
+    // Copy button with a brief ✓ confirmation so you know it copied.
+    private func copyButton(id: UUID, text: String, codeOnly: Bool = false) -> some View {
+        let copied = (codeOnly ? copiedCodeId : copiedMessageId) == id
+        let icon = copied ? "checkmark" : (codeOnly ? "curlybraces" : "doc.on.doc")
+        let label = copied ? (ar ? "تم" : "Copied")
+                           : (codeOnly ? (ar ? "نسخ الكود" : "Copy code") : (ar ? "نسخ" : "Copy"))
+        return actionButton(icon, label) {
+            copyToPasteboard(codeOnly ? extractCode(text) : text)
+            if codeOnly { copiedCodeId = id } else { copiedMessageId = id }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
+                if codeOnly { if copiedCodeId == id { copiedCodeId = nil } }
+                else { if copiedMessageId == id { copiedMessageId = nil } }
+            }
+        }
     }
 
     private var modeBar: some View {

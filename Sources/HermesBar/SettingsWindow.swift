@@ -61,6 +61,7 @@ final class SettingsModel: ObservableObject {
     @Published var savingVisionModel: String { didSet { commit() } }
     @Published var deepModel: String { didSet { commit() } }
     @Published var directKey: String { didSet { commit() } }
+    @Published var searchApiKey: String { didSet { commit() } }
 
     init() {
         let s = Settings.shared
@@ -78,6 +79,7 @@ final class SettingsModel: ObservableObject {
         savingVisionModel = s.savingVisionModel
         deepModel = s.deepModel
         directKey = s.directKey
+        searchApiKey = s.searchApiKey
     }
 
     private func commit() {
@@ -96,6 +98,7 @@ final class SettingsModel: ObservableObject {
         s.savingVisionModel = savingVisionModel
         s.deepModel = deepModel
         s.directKey = directKey
+        s.searchApiKey = searchApiKey
         s.save()
     }
 }
@@ -324,6 +327,13 @@ struct SettingsView: View {
                 TextField(ar ? "اتركه فاضي = افتراضي هيرميس" : "empty = Hermes default", text: $model.deepModel)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 220)
+            }
+            row(ar ? "مفتاح البحث (Tavily)" : "Search key (Tavily)") {
+                SecureField(ar ? "فاضي = بحث معطّل في وضع التوفير" : "empty = no search in Saving mode", text: $model.searchApiKey)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 220)
+                    .help(ar ? "مفتاح Tavily المجاني — يفعّل زر 🌐 مع أي مزوّد (حتى OpenCode Go)."
+                             : "Free Tavily key — enables the 🌐 button with any provider (even OpenCode Go).")
             }
 
             Divider()
