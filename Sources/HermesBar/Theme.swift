@@ -13,6 +13,7 @@ struct Theme: Identifiable {
     let textPrimary: Color
     let textSecondary: Color
     var isGlass: Bool = false  // when true, use a frosted NSVisualEffectView background
+    var glassShade: Double = 0.16  // darkness of the dark-glass tint over the blur (0 = clear)
 
     static func hex(_ v: UInt32) -> Color {
         Color(
@@ -28,7 +29,12 @@ struct Theme: Identifiable {
               textPrimary: hex(0xF3EFE0), textSecondary: hex(0x9FBDB6)),
         Theme(name: "glass", label: "Glass · زجاجي",
               background: hex(0x1A1A1F), surface: Color.white.opacity(0.10), accent: hex(0x6AA9FF),
-              textPrimary: Color.white, textSecondary: Color.white.opacity(0.65), isGlass: true),
+              textPrimary: Color.white, textSecondary: Color.white.opacity(0.65), isGlass: true, glassShade: 0.14),
+        // Dedicated dark-glass "command palette" look (Raycast-style): deep frosted
+        // panel + strong dark tint. This is the new design as its own theme.
+        Theme(name: "hb-graphite", label: "HermesBar Graphite · جرافيت",
+              background: hex(0x0D0E12), surface: Color.white.opacity(0.075), accent: hex(0x8FA3FF),
+              textPrimary: Color.white, textSecondary: Color.white.opacity(0.60), isGlass: true, glassShade: 0.52),
         Theme(name: "midnight", label: "Midnight",
               background: hex(0x0F1226), surface: hex(0x1B1F3B), accent: hex(0x7C8CFF),
               textPrimary: hex(0xE6E8FF), textSecondary: hex(0x9AA0CF)),

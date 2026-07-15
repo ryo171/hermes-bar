@@ -63,12 +63,11 @@ struct SpringPopButtonStyle: ButtonStyle {
     }
 }
 
-// A continuously animated multi-colour gradient border — the "Hermes is thinking"
-// status cue (adapted from the Gemini response-gradient reference). Many colours,
-// morphing smoothly; shown only while loading, and fades out when the answer lands.
-struct ThinkingGradientBorder: View {
-    var cornerRadius: CGFloat = 18
-    var lineWidth: CGFloat = 2.2
+// "Hermes is thinking" cue (adapted from the Gemini response-gradient reference):
+// a soft, morphing multi-colour wash concentrated in the TOP of the panel behind
+// the content — NOT on the window edges. It drifts + hue-rotates while loading and
+// fades down the panel via a mask, so only the upper area is tinted.
+struct ThinkingWash: View {
     private let colors: [Color] = [
         Color(red: 0.42, green: 0.55, blue: 1.00),   // blue
         Color(red: 0.30, green: 0.85, blue: 0.80),   // teal
@@ -76,19 +75,72 @@ struct ThinkingGradientBorder: View {
         Color(red: 0.98, green: 0.80, blue: 0.35),   // amber
         Color(red: 0.98, green: 0.55, blue: 0.45),   // coral
         Color(red: 0.85, green: 0.50, blue: 0.95),   // violet
-        Color(red: 1.00, green: 0.60, blue: 0.80),   // pink
     ]
     var body: some View {
         TimelineView(.animation) { timeline in
             let t = timeline.date.timeIntervalSinceReferenceDate
-            let angle = Angle(degrees: (t * 90).truncatingRemainder(dividingBy: 360))
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .strokeBorder(
-                    AngularGradient(gradient: Gradient(colors: colors + [colors[0]]),
-                                    center: .center, angle: angle),
-                    lineWidth: lineWidth)
-                .blur(radius: 0.4)
+            LinearGradient(gradient: Gradient(colors: colors),
+                           startPoint: UnitPoint(x: 0.5 + 0.5 * cos(t * 0.55), y: 0.0),
+                           endPoint: UnitPoint(x: 0.5 + 0.5 * sin(t * 0.42), y: 1.0))
+                .hueRotation(.degrees(t * 26))
+                .opacity(0.60)
+                .blur(radius: 42)
+                .mask(
+                    LinearGradient(colors: [.white, .white.opacity(0.28), .clear],
+                                   startPoint: .top, endPoint: .bottom)
+                )
         }
+        .allowsHitTesting(false)
+    }
+}
+
+// A read-only NSTextView that sizes itself to its content — gives real, native,
+// drag-anywhere text selection (SwiftUI's Markdown splits an answer into many
+// blocks, which prevents selecting across them). Used for the "select text" mode.
+final class SelfSizingTextView: NSTextView {
+    override var intrinsicContentSize: NSSize {
+        guard let lm = layoutManager, let tc = textContainer else { return super.intrinsicContentSize }
+        lm.ensureLayout(for: tc)
+        let used = lm.usedRect(for: tc)
+        return NSSize(width: NSView.noIntrinsicMetric, height: ceil(used.height))
+    }
+}
+
+struct SelectableText: NSViewRepresentable {
+    let text: String
+    var color: NSColor
+    var fontSize: CGFloat = 15
+
+    func makeNSView(context: Context) -> SelfSizingTextView {
+        let tv = SelfSizingTextView()
+        tv.isEditable = false
+        tv.isSelectable = true
+        tv.drawsBackground = false
+        tv.textContainerInset = .zero
+        tv.textContainer?.lineFragmentPadding = 0
+        tv.isVerticallyResizable = true
+        tv.isHorizontallyResizable = false
+        tv.textContainer?.widthTracksTextView = true
+        return tv
+    }
+
+    func updateNSView(_ tv: SelfSizingTextView, context: Context) {
+        if tv.string != text { tv.string = text }
+        tv.font = .systemFont(ofSize: fontSize)
+        tv.textColor = color
+        tv.invalidateIntrinsicContentSize()
+    }
+
+    // Give SwiftUI a correct height for the proposed width (macOS 13+).
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: SelfSizingTextView, context: Context) -> CGSize? {
+        let width = proposal.width ?? 400
+        nsView.string = text
+        nsView.font = .systemFont(ofSize: fontSize)
+        guard let tc = nsView.textContainer, let lm = nsView.layoutManager else { return nil }
+        tc.containerSize = NSSize(width: width, height: .greatestFiniteMagnitude)
+        lm.ensureLayout(for: tc)
+        let h = lm.usedRect(for: tc).height
+        return CGSize(width: width, height: ceil(h))
     }
 }
 
@@ -801,22 +853,11 @@ struct AskView: View {
             .padding(16)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(background)
-            .overlay(thinkingOverlay)
             .overlay(dropHighlight)
-            .animation(.easeInOut(duration: 0.45), value: vm.isLoading)
+            .animation(.easeInOut(duration: 0.5), value: vm.isLoading)
             .environment(\.layoutDirection, ar ? .rightToLeft : .leftToRight)
             .onExitCommand { vm.onClose?() }
             .onDrop(of: [UTType.fileURL], isTargeted: $dropTargeted) { providers in handleDrop(providers) }
-    }
-
-    // "Hermes is thinking" cue — a morphing multi-colour gradient border while a
-    // reply is being generated; fades away when the answer lands.
-    @ViewBuilder private var thinkingOverlay: some View {
-        if vm.isLoading {
-            ThinkingGradientBorder(cornerRadius: 18)
-                .allowsHitTesting(false)
-                .transition(.opacity)
-        }
     }
 
     @ViewBuilder private var layoutBody: some View {
@@ -882,13 +923,27 @@ struct AskView: View {
     }
 
     @ViewBuilder private var background: some View {
+        ZStack {
+            baseBackground
+            // Thinking wash lives in the TOP of the panel background (behind content),
+            // clipped to the panel shape — not on the window edges.
+            if vm.isLoading {
+                ThinkingWash()
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .transition(.opacity)
+            }
+        }
+    }
+
+    @ViewBuilder private var baseBackground: some View {
         if t.isGlass {
-            // Dark frosted glass (Raycast-style): blur + a dark tint so the panel
-            // reads as deep glass regardless of the wallpaper behind it.
+            // Dark frosted glass: blur + a per-theme dark tint so the panel reads as
+            // deep glass regardless of the wallpaper behind it.
             ZStack {
                 VisualEffectBackground()
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(LinearGradient(colors: [Color.black.opacity(0.44), Color.black.opacity(0.30)],
+                    .fill(LinearGradient(colors: [Color.black.opacity(min(t.glassShade + 0.12, 0.9)),
+                                                  Color.black.opacity(t.glassShade)],
                                          startPoint: .top, endPoint: .bottom))
             }
             .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)
@@ -990,7 +1045,7 @@ struct AskView: View {
     }
 
     private var controlRow: some View {
-        HStack(spacing: 13) {
+        HStack(spacing: 7) {
             controlIcons
             Spacer()
             sendOrStop
@@ -1020,9 +1075,16 @@ struct AskView: View {
         }
     }
 
+    // Raycast-style icon chip: rounded-rect with a subtle fill + hairline border.
     private func iconButton(_ name: String, active: Bool, help: String, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: name).font(.system(size: 15)).foregroundColor(active ? t.accent : t.textSecondary)
+            Image(systemName: name).font(.system(size: 14, weight: .medium))
+                .foregroundColor(active ? t.accent : t.textSecondary)
+                .frame(width: 30, height: 26)
+                .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(active ? t.accent.opacity(0.16) : t.surface.opacity(0.55)))
+                .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .strokeBorder(t.textSecondary.opacity(active ? 0.0 : 0.16), lineWidth: 1))
         }.buttonStyle(SpringPopButtonStyle()).help(help)
     }
 
@@ -1115,11 +1177,8 @@ struct AskView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
                     if selectableIds.contains(msg.id) {
-                        // Plain, fully drag-selectable text (select ANY portion, copy freely).
-                        Text(msg.text)
-                            .font(.system(size: 15))
-                            .foregroundColor(t.textPrimary)
-                            .textSelection(.enabled)
+                        // Native NSTextView — drag-select ANY portion of the reply, copy freely.
+                        SelectableText(text: msg.text, color: NSColor(t.textPrimary))
                             .frame(maxWidth: .infinity, alignment: .leading)
                     } else {
                         Markdown(msg.text)
@@ -1163,6 +1222,11 @@ struct AskView: View {
                        help: ar ? "رد سيئ (يبلّغ هيرميس أنه لم يعجبني)" : "Bad answer", active: down) {
                 vm.rate(msg.id, up: false)
             }
+            iconAction(selectableIds.contains(msg.id) ? "textformat.size" : "text.cursor",
+                       help: ar ? "تحديد النص (حدّد أي جزء)" : "Select text",
+                       active: selectableIds.contains(msg.id)) {
+                if selectableIds.contains(msg.id) { selectableIds.remove(msg.id) } else { selectableIds.insert(msg.id) }
+            }
             moreMenu(msg)
             Spacer()
             if msg.elapsed > 0 {
@@ -1172,20 +1236,16 @@ struct AskView: View {
         .padding(.top, 2)
     }
 
-    // The overflow menu: summarize · toggle selectable text · open in Desktop.
+    // The overflow menu: summarize · open in Desktop.
     private func moreMenu(_ msg: ChatMessage) -> some View {
-        let selectable = selectableIds.contains(msg.id)
-        return Menu {
+        Menu {
             Button(ar ? "لخّص" : "Summarize") { vm.summarize(msg.id) }
-            Button(selectable ? (ar ? "عرض منسّق" : "Formatted view")
-                              : (ar ? "تحديد النص" : "Select text")) {
-                if selectable { selectableIds.remove(msg.id) } else { selectableIds.insert(msg.id) }
-            }
             Button(ar ? "افتح في هيرميس ديسكتوب" : "Open in Hermes Desktop") { openHermesDesktop() }
         } label: {
             Image(systemName: "ellipsis").font(.system(size: 12)).foregroundColor(t.textSecondary)
-                .padding(.horizontal, 8).padding(.vertical, 5)
-                .background(Capsule().fill(t.surface))
+                .padding(.horizontal, 8).padding(.vertical, 6)
+                .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(t.surface.opacity(0.55)))
+                .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(t.textSecondary.opacity(0.14), lineWidth: 1))
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
@@ -1193,14 +1253,17 @@ struct AskView: View {
         .help(ar ? "المزيد" : "More")
     }
 
-    // A round-pill icon button with spring-pop feedback.
+    // Raycast-style rounded-rect icon button with spring-pop feedback.
     private func iconAction(_ system: String, help: String, active: Bool = false, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: system).font(.system(size: 13))
                 .foregroundColor(active ? t.accent : t.textSecondary)
                 .frame(width: 18, height: 16)
                 .padding(.horizontal, 7).padding(.vertical, 5)
-                .background(Capsule().fill(t.surface))
+                .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(active ? t.accent.opacity(0.16) : t.surface.opacity(0.55)))
+                .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .strokeBorder(t.textSecondary.opacity(active ? 0.0 : 0.14), lineWidth: 1))
         }.buttonStyle(SpringPopButtonStyle()).help(help)
     }
 
