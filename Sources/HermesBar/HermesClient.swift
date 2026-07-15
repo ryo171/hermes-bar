@@ -45,8 +45,11 @@ final class HermesClient {
         req.timeoutInterval = 15
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        // include_answer → Tavily returns a concise synthesized answer; we inject
+        // that (not 5 raw pages) so the prompt stays lean and on-topic.
         let payload: [String: Any] = ["api_key": apiKey, "query": query,
-                                      "max_results": 5, "search_depth": "basic"]
+                                      "max_results": 4, "search_depth": "advanced",
+                                      "include_answer": true]
         req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
 
         var out: String?
@@ -54,16 +57,22 @@ final class HermesClient {
         URLSession.shared.dataTask(with: req) { data, _, _ in
             defer { sem.signal() }
             guard let data = data,
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let results = json["results"] as? [[String: Any]], !results.isEmpty else { return }
-            var s = "[Recent web results — use these for anything current]\n"
-            for r in results.prefix(5) {
-                let title = (r["title"] as? String) ?? ""
-                let content = (r["content"] as? String) ?? ""
-                let link = (r["url"] as? String) ?? ""
-                s += "- \(title): \(content) (\(link))\n"
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+            var s = "[Web search — use only what's relevant to the question]\n"
+            if let answer = json["answer"] as? String, !answer.isEmpty {
+                s += "Summary: \(answer)\n"
             }
-            out = s
+            if let results = json["results"] as? [[String: Any]], !results.isEmpty {
+                s += "Sources:\n"
+                for r in results.prefix(4) {
+                    let title = (r["title"] as? String) ?? ""
+                    let link = (r["url"] as? String) ?? ""
+                    let snippet = String(((r["content"] as? String) ?? "").prefix(120))
+                    s += "- \(title): \(snippet) (\(link))\n"
+                }
+            }
+            let trimmed = String(s.prefix(1200))
+            out = trimmed.count > 40 ? trimmed : nil   // ignore empty/near-empty blocks
         }.resume()
         _ = sem.wait(timeout: .now() + 16)
         return out
