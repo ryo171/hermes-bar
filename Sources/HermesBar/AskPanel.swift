@@ -292,6 +292,7 @@ final class FloatingPanel: NSPanel {
         backgroundColor = .clear
         isOpaque = false
         hasShadow = true
+        isReleasedWhenClosed = false   // ARC owns the panel; close() must not release it
         minSize = NSSize(width: 460, height: 260)
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
     }
@@ -734,8 +735,12 @@ final class AskPanelController: NSObject, NSWindowDelegate {
     private var cancellables = Set<AnyCancellable>()
     private let defaultSize = NSSize(width: 720, height: 520)
     private var ignoreResignUntil: Date = .distantPast   // keeps the panel from flash-dismissing
+    private var hasPositioned = false                    // place once, then preserve position
+
+    var onClosed: (() -> Void)?                          // AppDelegate removes us when destroyed
 
     var isVisible: Bool { panel?.isVisible ?? false }
+    var isKey: Bool { panel?.isKeyWindow ?? false }
 
     func setScreenshot(_ on: Bool) { viewModel.setWithScreenshot(on) }
 
@@ -782,7 +787,12 @@ final class AskPanelController: NSObject, NSWindowDelegate {
         }
         ensurePanel()
         applyPinBehavior()
-        position(panel!)
+        // Centre only the first time; afterwards the window reappears exactly where
+        // the user left it (e.g. a screen corner), preserving position on Show.
+        if !hasPositioned {
+            position(panel!)
+            hasPositioned = true
+        }
         NSApp.activate(ignoringOtherApps: true)
         panel!.makeKeyAndOrderFront(nil)
     }
@@ -795,16 +805,25 @@ final class AskPanelController: NSObject, NSWindowDelegate {
     }
 
     func dismiss() {
-        // Pure hide — the conversation is preserved so the hotkey works as
-        // show/hide. Start a fresh chat with ⌘N or the New-chat button instead.
+        // Pure hide — position + conversation are preserved so Show brings it back
+        // exactly as it was.
         panel?.orderOut(nil)
     }
 
-    // Close hotkey: end the conversation (archive + clear) and hide, so the next
-    // summon is a clean, empty chat.
-    func endConversationAndHide() {
-        viewModel.newChat()
-        panel?.orderOut(nil)
+    // Close hotkey: permanently destroy this window. Archive the chat, tear down the
+    // panel for good, and notify the app so it drops us from its window list — so it
+    // can NEVER reappear on a later Show (no hidden leftovers piling up).
+    func destroy() {
+        viewModel.stop()
+        viewModel.archiveToObsidian()
+        cancellables.removeAll()
+        if let p = panel {
+            p.delegate = nil
+            p.orderOut(nil)
+            p.close()
+        }
+        panel = nil
+        onClosed?()
     }
 
     func applyTheme() { viewModel.refreshFromSettings() }
@@ -1119,37 +1138,61 @@ struct AskView: View {
     }
 
     private var contentArea: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 12) {
-                if hiddenCount > 0 {
-                    Button(action: { showAllHistory = true }) {
-                        HStack(spacing: 5) {
-                            Image(systemName: "chevron.up")
-                            Text(ar ? "عرض \(hiddenCount) رسالة أقدم" : "Show \(hiddenCount) earlier messages")
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    if hiddenCount > 0 {
+                        Button(action: { showAllHistory = true }) {
+                            HStack(spacing: 5) {
+                                Image(systemName: "chevron.up")
+                                Text(ar ? "عرض \(hiddenCount) رسالة أقدم" : "Show \(hiddenCount) earlier messages")
+                            }
+                            .font(.system(size: 12)).foregroundColor(t.textSecondary)
                         }
-                        .font(.system(size: 12)).foregroundColor(t.textSecondary)
+                        .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.plain)
-                    .frame(maxWidth: .infinity)
-                }
-                ForEach(visibleMessages) { msg in
-                    messageView(msg)
-                }
-                if vm.isLoading, (vm.messages.last?.text.isEmpty ?? false) {
-                    HStack(spacing: 8) {
-                        ProgressView().controlSize(.small)
-                        Text((ar ? "هيرميس يشتغل… " : "Working… ") + timerText)
-                            .font(.system(size: 13)).foregroundColor(t.textSecondary)
+                    ForEach(visibleMessages) { msg in
+                        messageView(msg).id(msg.id)
                     }
+                    if vm.isLoading, (vm.messages.last?.text.isEmpty ?? false) {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text((ar ? "هيرميس يشتغل… " : "Working… ") + timerText)
+                                .font(.system(size: 13)).foregroundColor(t.textSecondary)
+                        }
+                    }
+                    if !vm.errorText.isEmpty {
+                        Text(vm.errorText).font(.system(size: 14)).foregroundColor(.red).textSelection(.enabled)
+                    }
+                    Color.clear.frame(height: 1).id("BOTTOM_ANCHOR")
                 }
-                if !vm.errorText.isEmpty {
-                    Text(vm.errorText).font(.system(size: 14)).foregroundColor(.red).textSelection(.enabled)
-                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 2)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.vertical, 2)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .overlay(alignment: .bottom) { scrollDownButton(proxy) }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    // Centered, semi-transparent circular button that jumps to the last line.
+    // Kept translucent so it never fully hides the text behind it.
+    @ViewBuilder private func scrollDownButton(_ proxy: ScrollViewProxy) -> some View {
+        if vm.messages.count > 1 || vm.isLoading {
+            Button {
+                withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo("BOTTOM_ANCHOR", anchor: .bottom) }
+            } label: {
+                Image(systemName: "arrow.down")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(t.textPrimary)
+                    .frame(width: 32, height: 32)
+                    .background(Circle().fill(t.surface.opacity(0.45)))
+                    .overlay(Circle().strokeBorder(t.textSecondary.opacity(0.22), lineWidth: 1))
+            }
+            .buttonStyle(SpringPopButtonStyle())
+            .padding(.bottom, 6)
+            .help(ar ? "النزول لآخر سطر" : "Jump to latest")
+        }
     }
 
     @ViewBuilder private func messageView(_ msg: ChatMessage) -> some View {

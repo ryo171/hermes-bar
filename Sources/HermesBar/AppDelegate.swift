@@ -6,8 +6,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private let hotKey = GlobalHotKey(id: 1)
     private let newWindowHotKey = GlobalHotKey(id: 2)
     private let closeHotKey = GlobalHotKey(id: 3)
-    private var panelController: AskPanelController?
-    private var extraPanels: [AskPanelController] = []
+    // Every open conversation window. The ONLY things that append here are the
+    // explicit creators (New-conversation hotkey/menu/icon + Ask menu when nothing
+    // is open). Show/Hide never creates; Close destroys and removes.
+    private var windows: [AskPanelController] = []
     private weak var pendingResultController: AskPanelController?
     private var settingsWindow: SettingsWindowController?
 
@@ -160,12 +162,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
     }
 
-    // Close = end the conversation(s) in the visible window(s) and hide them, so
-    // the next summon starts clean. (Show/hide keeps the chat; this clears it.)
+    // Close = permanently DESTROY only the focused window (the one with the text
+    // cursor / key focus). Not "hide" — it's gone for good and won't come back on
+    // the next Show. Falls back to the frontmost visible window if none is key.
     private func closeConversation() {
-        let visible = allPanels.filter { $0.isVisible }
-        let targets = visible.isEmpty ? allPanels : visible
-        targets.forEach { $0.endConversationAndHide() }
+        guard let target = windows.first(where: { $0.isKey })
+                        ?? windows.last(where: { $0.isVisible }) else { return }
+        target.destroy()   // its onClosed callback removes it from `windows`
     }
 
     @objc private func settingsChanged() {
@@ -173,14 +176,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         registerHotKey()
         statusItem.button?.image = HermesIcon.statusBarImage()
         statusItem.button?.image?.isTemplate = true
-        panelController?.applyTheme()
-        extraPanels.forEach { $0.applyTheme() }
+        windows.forEach { $0.applyTheme() }
     }
 
     // MARK: - Actions
 
-    @objc private func askAboutScreen() { showPanel(screenshot: true) }
-    @objc private func askTextOnly()    { showPanel(screenshot: false) }
+    // Ask menu: reuse the focused/frontmost open window (just flip its screenshot
+    // pref) so it doesn't proliferate; create one only if nothing is open.
+    @objc private func askAboutScreen() { askOrCreate(screenshot: true) }
+    @objc private func askTextOnly()    { askOrCreate(screenshot: false) }
+
+    private func askOrCreate(screenshot: Bool) {
+        // Reuse any existing window (key → visible → any) so Ask never proliferates;
+        // create one only when nothing exists at all.
+        if let c = windows.first(where: { $0.isKey })
+                ?? windows.last(where: { $0.isVisible })
+                ?? windows.first {
+            c.setScreenshot(screenshot)
+            c.present()
+        } else {
+            newWindow(screenshot: screenshot)
+        }
+    }
 
     @objc private func openSettings() {
         if settingsWindow == nil { settingsWindow = SettingsWindowController() }
@@ -211,52 +228,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     // MARK: - Panel
 
-    private func ensureController() -> AskPanelController {
-        if panelController == nil { panelController = AskPanelController() }
-        return panelController!
-    }
-
-    private func showPanel(screenshot: Bool) {
-        let c = ensureController()
+    // The ONE creator. Every new window flows through here and registers an
+    // onClosed callback so it's removed from `windows` when destroyed.
+    private func newWindow(screenshot: Bool) {
+        let c = AskPanelController()
         c.setScreenshot(screenshot)
+        c.onClosed = { [weak self, weak c] in
+            guard let self = self, let c = c else { return }
+            self.windows.removeAll { $0 === c }
+            if self.pendingResultController === c { self.pendingResultController = nil }
+        }
+        windows.append(c)
         c.present()
     }
 
-    // Every HermesBar window (primary + spawned).
-    private var allPanels: [AskPanelController] {
-        var a = extraPanels
-        if let p = panelController { a.append(p) }
-        return a
-    }
-
-    // STRICT show/hide: only manage windows that ALREADY exist. Never creates a
-    // window — that is exclusively the New-conversation action's job. If any window
-    // is visible → hide them all; if all are hidden → bring them back; if none
-    // exist → do nothing (the key is intentionally inert until a conversation
-    // exists, so repeated presses can never spawn/duplicate windows).
+    // STRICT show/hide: ONLY toggles windows that already exist — never creates.
+    // Any visible → hide them all (preserving their positions + chats); all hidden
+    // → bring them back where they were; none exist → no-op. Repeated presses can
+    // never spawn or duplicate windows.
     private func togglePanel() {
-        let panels = allPanels
-        let visible = panels.filter { $0.isVisible }
+        let visible = windows.filter { $0.isVisible }
         if !visible.isEmpty {
             visible.forEach { $0.dismiss() }
-        } else if !panels.isEmpty {
-            panels.forEach { $0.present() }
+        } else {
+            windows.forEach { $0.present() }
         }
-        // else: no window → no-op.
     }
 
     // Menu wrappers for the two hotkey-driven actions (so they're discoverable).
     @objc private func menuToggle() { togglePanel() }
     @objc private func menuClose()  { closeConversation() }
 
-    // A second, fully independent Hermes window: its own conversation and thread,
-    // same local gateway. Independent requests → no effect on answer quality.
-    @objc private func spawnWindow() {
-        let c = AskPanelController()
-        c.setScreenshot(false)
-        extraPanels.append(c)
-        c.present()
-    }
+    // New conversation — a fully independent Hermes window (own thread + session).
+    @objc private func spawnWindow() { newWindow(screenshot: false) }
 
     // MARK: - Notifications (scoped pin)
 
@@ -271,7 +275,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
-        (pendingResultController ?? panelController)?.presentShowingResult()
+        (pendingResultController ?? windows.last)?.presentShowingResult()
         completionHandler()
     }
 }
