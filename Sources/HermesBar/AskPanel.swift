@@ -248,6 +248,72 @@ struct SelectableText: NSViewRepresentable {
     }
 }
 
+// Renders Markdown as a natively-selectable NSTextView with real bold/italic (no
+// literal "*" or "#"), so any part is drag-selectable and copies out clean text.
+struct SelectableAttributedText: NSViewRepresentable {
+    let markdown: String
+    var color: NSColor
+    var fontSize: CGFloat = 15
+
+    func makeNSView(context: Context) -> SelfSizingTextView {
+        let tv = SelfSizingTextView()
+        tv.isEditable = false
+        tv.isSelectable = true
+        tv.drawsBackground = false
+        tv.textContainerInset = .zero
+        tv.textContainer?.lineFragmentPadding = 0
+        tv.isVerticallyResizable = true
+        tv.isHorizontallyResizable = false
+        tv.textContainer?.widthTracksTextView = true
+        return tv
+    }
+
+    func updateNSView(_ tv: SelfSizingTextView, context: Context) {
+        tv.textStorage?.setAttributedString(Self.build(markdown, color: color, fontSize: fontSize))
+        tv.invalidateIntrinsicContentSize()
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: SelfSizingTextView, context: Context) -> CGSize? {
+        let width = proposal.width ?? 400
+        nsView.textStorage?.setAttributedString(Self.build(markdown, color: color, fontSize: fontSize))
+        guard let tc = nsView.textContainer, let lm = nsView.layoutManager else { return nil }
+        tc.containerSize = NSSize(width: width, height: .greatestFiniteMagnitude)
+        lm.ensureLayout(for: tc)
+        let h = lm.usedRect(for: tc).height
+        return CGSize(width: width, height: ceil(h))
+    }
+
+    static func build(_ md: String, color: NSColor, fontSize: CGFloat) -> NSAttributedString {
+        let opts = AttributedString.MarkdownParsingOptions(interpretedSyntax: .full,
+                                                           failurePolicy: .returnPartiallyParsedIfPossible)
+        let ns: NSMutableAttributedString
+        if let parsed = try? NSAttributedString(markdown: md, options: opts, baseURL: nil) {
+            ns = NSMutableAttributedString(attributedString: parsed)
+        } else {
+            ns = NSMutableAttributedString(string: md)
+        }
+        let full = NSRange(location: 0, length: ns.length)
+        // Resize every run to `fontSize` while preserving bold/italic/mono traits.
+        ns.enumerateAttribute(.font, in: full, options: []) { value, range, _ in
+            let base = (value as? NSFont) ?? NSFont.systemFont(ofSize: fontSize)
+            let traits = base.fontDescriptor.symbolicTraits
+            let desc = NSFont.systemFont(ofSize: fontSize).fontDescriptor.withSymbolicTraits(traits)
+            let f = NSFont(descriptor: desc, size: fontSize) ?? NSFont.systemFont(ofSize: fontSize)
+            ns.addAttribute(.font, value: f, range: range)
+        }
+        ns.addAttribute(.foregroundColor, value: color, range: full)
+        return ns
+    }
+
+    // Plain text of the markdown (no syntax) — used for the "copy all" button.
+    static func plain(_ md: String) -> String {
+        let opts = AttributedString.MarkdownParsingOptions(interpretedSyntax: .full,
+                                                           failurePolicy: .returnPartiallyParsedIfPossible)
+        if let a = try? AttributedString(markdown: md, options: opts) { return String(a.characters) }
+        return md
+    }
+}
+
 enum Notifier {
     static func requestAuth() {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
@@ -267,6 +333,39 @@ struct ChatMessage: Identifiable, Equatable {
     let role: String   // "user" or "assistant"
     var text: String
     var elapsed: TimeInterval = 0   // time this answer took (assistant messages)
+}
+
+// MARK: - Local Kanban (real cards, persisted; not dependent on Hermes' API)
+
+struct KanbanCard: Codable, Identifiable, Equatable {
+    var id = UUID()
+    var title: String
+    var column: Int = 0   // 0 = To-do, 1 = Doing, 2 = Done
+}
+
+final class KanbanStore: ObservableObject {
+    static let shared = KanbanStore()
+    @Published var cards: [KanbanCard] = [] { didSet { save() } }
+    private let key = "hb.kanban.cards"
+
+    init() {
+        if let data = UserDefaults.standard.data(forKey: key),
+           let c = try? JSONDecoder().decode([KanbanCard].self, from: data) { cards = c }
+    }
+    private func save() {
+        if let d = try? JSONEncoder().encode(cards) { UserDefaults.standard.set(d, forKey: key) }
+    }
+    func add(_ title: String, column: Int = 0) {
+        let t = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return }
+        cards.append(KanbanCard(title: t, column: column))
+    }
+    func move(_ card: KanbanCard, by delta: Int) {
+        guard let i = cards.firstIndex(where: { $0.id == card.id }) else { return }
+        cards[i].column = max(0, min(2, cards[i].column + delta))
+    }
+    func remove(_ card: KanbanCard) { cards.removeAll { $0.id == card.id } }
+    func cards(in col: Int) -> [KanbanCard] { cards.filter { $0.column == col } }
 }
 
 // MARK: - Multiline input (Enter = send, Shift+Enter = newline)
@@ -322,8 +421,7 @@ struct MultilineInput: NSViewRepresentable {
                 if shift {
                     textView.insertNewline(nil)
                 } else {
-                    parent.onSend()
-                    textView.selectAll(nil)
+                    parent.onSend()   // send() clears the bound text → the field empties
                 }
                 return true
             }
@@ -576,8 +674,10 @@ final class AskViewModel: ObservableObject {
             onDelta: { piece in acc += piece },
             onSession: { _ in },
             onDone: { [weak self] _ in
-                let lines = acc.split(separator: "\n").map { $0.trimmingCharacters(in: CharacterSet(charactersIn: " -•*\t")) }
-                    .filter { $0.count > 4 }.prefix(3).map(String.init)
+                let lines = acc.split(separator: "\n")
+                    .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: " -•*\t")) }
+                    .filter { $0.count > 4 }
+                    .prefix(3)
                 self?.suggestions = Array(lines)
             }
         )
@@ -630,6 +730,7 @@ final class AskViewModel: ObservableObject {
 
         let atts = attachments
         attachments = []
+        input = ""                 // clear the field right after sending
         let wantsShot = withScreenshot
         let ar = isArabic
         let fast = (mode == "fast")
@@ -1030,6 +1131,13 @@ final class AskPanelController: NSObject, NSWindowDelegate {
 
 // MARK: - SwiftUI content
 
+// Reports the bottom anchor's position inside the scroll view, so we can tell when
+// the user has scrolled up (and show the jump-to-latest button) vs at the bottom.
+struct HBBottomKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+}
+
 struct AskView: View {
     @ObservedObject var vm: AskViewModel
     @State private var dropTargeted = false
@@ -1037,7 +1145,11 @@ struct AskView: View {
     @State private var showAllHistory = false
     @State private var copiedMessageId: UUID?
     @State private var copiedCodeId: UUID?
-    @State private var selectableIds: Set<UUID> = []   // messages shown as selectable plain text
+    @State private var bottomAnchorY: CGFloat = 0
+    @State private var scrollViewportH: CGFloat = 0
+    @State private var showKanban = false
+    @State private var kanbanInput = ""
+    @ObservedObject private var kanban = KanbanStore.shared
 
     private let historyCap = 30   // render only recent turns in the light panel
 
@@ -1054,6 +1166,7 @@ struct AskView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .overlay(dropHighlight)
+        .overlay { if showKanban { kanbanOverlay } }
         .animation(.easeInOut(duration: 0.6), value: vm.isLoading)   // gradual light fade
         .preferredColorScheme(colorSchemeForMode)
         .environment(\.layoutDirection, ar ? .rightToLeft : .leftToRight)
@@ -1570,7 +1683,7 @@ struct AskView: View {
         case "desktop":
             iconButton("macwindow.on.rectangle", active: false, help: ar ? "افتح هيرميس ديسكتوب" : "Open Hermes Desktop") { openHermesDesktop() }
         case "tasks":
-            iconButton("checklist", active: false, help: ar ? "أنشئ مهمة في لوحة Kanban" : "Create a Kanban task") { vm.applyTaskPrefix() }
+            iconButton("checklist", active: showKanban, help: ar ? "لوحة Kanban (بطاقات)" : "Kanban board (cards)") { showKanban.toggle() }
         case "schedule":
             iconButton("calendar.badge.clock", active: false, help: ar ? "جدوِل مهمة (cron)" : "Schedule a task (cron)") { vm.applySchedulePrefix() }
         default:
@@ -1591,7 +1704,7 @@ struct AskView: View {
         case "notify":  vm.toggleNotify()
         case "spawn":   NotificationCenter.default.post(name: .hbSpawnWindow, object: nil)
         case "desktop": openHermesDesktop()
-        case "tasks":   vm.applyTaskPrefix()
+        case "tasks":   showKanban.toggle()
         case "schedule": vm.applySchedulePrefix()
         default: break
         }
@@ -1689,12 +1802,17 @@ struct AskView: View {
                 ForEach(vm.attachments) { att in
                     HStack(spacing: 8) {
                         Image(systemName: att.symbol)
-                            .font(.system(size: 13)).foregroundColor(t.accent)
-                            .frame(width: 26, height: 26)
-                            .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(t.accent.opacity(0.15)))
-                        Text(att.name)
-                            .font(.system(size: 12)).foregroundColor(t.textPrimary)
-                            .lineLimit(1).truncationMode(.middle).frame(maxWidth: 130, alignment: .leading)
+                            .font(.system(size: 15)).foregroundColor(t.accent)
+                            .frame(width: 30, height: 30)
+                            .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(t.accent.opacity(0.15)))
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(att.name)
+                                .font(.system(size: 12, weight: .medium)).foregroundColor(t.textPrimary)
+                                .lineLimit(1).truncationMode(.middle).frame(maxWidth: 130, alignment: .leading)
+                            Text(att.isDirectory ? (ar ? "مجلد" : "Folder")
+                                                 : (att.url.pathExtension.isEmpty ? (ar ? "ملف" : "File") : att.url.pathExtension.uppercased()))
+                                .font(.system(size: 10)).foregroundColor(t.textSecondary)
+                        }
                         Button(action: { vm.removeAttachment(att) }) {
                             Image(systemName: "xmark.circle.fill").font(.system(size: 13)).foregroundColor(t.textSecondary)
                         }.buttonStyle(.plain)
@@ -1706,7 +1824,7 @@ struct AskView: View {
             }
             .padding(.vertical, 1)
         }
-        .frame(maxHeight: 44)
+        .frame(maxHeight: 52)
     }
 
     private var visibleMessages: [ChatMessage] {
@@ -1741,33 +1859,109 @@ struct AskView: View {
                         Text(vm.errorText).font(.system(size: 14)).foregroundColor(.red).textSelection(.enabled)
                     }
                     Color.clear.frame(height: 1).id("BOTTOM_ANCHOR")
+                        .background(GeometryReader { g in
+                            Color.clear.preference(key: HBBottomKey.self, value: g.frame(in: .named("hbscroll")).maxY)
+                        })
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.vertical, 2)
             }
+            .coordinateSpace(name: "hbscroll")
+            .onPreferenceChange(HBBottomKey.self) { bottomAnchorY = $0 }
+            .background(GeometryReader { g in
+                Color.clear.onAppear { scrollViewportH = g.size.height }
+                    .onChange(of: g.size.height) { newH in scrollViewportH = newH }
+            })
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .overlay(alignment: .bottom) { scrollDownButton(proxy) }
+            .overlay(alignment: .bottomLeading) {
+                // Show only when there's more than ~a screen of content below the fold.
+                if bottomAnchorY > scrollViewportH + 60 { scrollDownButton(proxy) }
+            }
         }
     }
 
-    // Centered, semi-transparent circular button that jumps to the last line.
-    // Kept translucent so it never fully hides the text behind it.
-    @ViewBuilder private func scrollDownButton(_ proxy: ScrollViewProxy) -> some View {
-        if vm.messages.count > 1 || vm.isLoading {
-            Button {
-                withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo("BOTTOM_ANCHOR", anchor: .bottom) }
-            } label: {
-                Image(systemName: "arrow.down")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(t.textPrimary)
-                    .frame(width: 32, height: 32)
-                    .background(Circle().fill(t.surface.opacity(0.45)))
-                    .overlay(Circle().strokeBorder(t.textSecondary.opacity(0.22), lineWidth: 1))
-            }
-            .buttonStyle(SpringPopButtonStyle())
-            .padding(.bottom, 6)
-            .help(ar ? "النزول لآخر سطر" : "Jump to latest")
+    // Left-aligned, semi-transparent circular button that jumps to the last line.
+    // Only visible when scrolled up (hidden once you're at the bottom).
+    private func scrollDownButton(_ proxy: ScrollViewProxy) -> some View {
+        Button {
+            withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo("BOTTOM_ANCHOR", anchor: .bottom) }
+        } label: {
+            Image(systemName: "arrow.down")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(t.textPrimary)
+                .frame(width: 32, height: 32)
+                .background(Circle().fill(t.surface.opacity(0.45)))
+                .overlay(Circle().strokeBorder(t.textSecondary.opacity(0.22), lineWidth: 1))
         }
+        .buttonStyle(SpringPopButtonStyle())
+        .padding(.leading, 6).padding(.bottom, 6)
+        .transition(.opacity)
+        .help(ar ? "النزول لآخر سطر" : "Jump to latest")
+    }
+
+    // MARK: - Kanban overlay (local, real cards)
+
+    private var kanbanOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.35).onTapGesture { showKanban = false }
+            VStack(spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: "checklist").foregroundColor(t.accent)
+                    Text(ar ? "لوحة Kanban" : "Kanban board").font(.system(size: 15, weight: .bold)).foregroundColor(t.textPrimary)
+                    Spacer()
+                    Button { showKanban = false } label: {
+                        Image(systemName: "xmark.circle.fill").foregroundColor(t.textSecondary)
+                    }.buttonStyle(.plain)
+                }
+                HStack(alignment: .top, spacing: 8) {
+                    kanbanColumn(0, ar ? "قائمة" : "To-do")
+                    kanbanColumn(1, ar ? "جارٍ" : "Doing")
+                    kanbanColumn(2, ar ? "تم" : "Done")
+                }
+                HStack(spacing: 8) {
+                    TextField(ar ? "أضف بطاقة…" : "Add a card…", text: $kanbanInput)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { kanban.add(kanbanInput); kanbanInput = "" }
+                    Button(ar ? "أضف" : "Add") { kanban.add(kanbanInput); kanbanInput = "" }.buttonStyle(.borderedProminent)
+                }
+            }
+            .padding(16)
+            .frame(maxWidth: 560, maxHeight: 460)
+            .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(t.background))
+            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(t.textSecondary.opacity(0.2), lineWidth: 1))
+            .padding(24)
+        }
+    }
+
+    private func kanbanColumn(_ col: Int, _ title: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title).font(.system(size: 12, weight: .semibold)).foregroundColor(t.textSecondary)
+                Spacer()
+                Text("\(kanban.cards(in: col).count)").font(.system(size: 11)).foregroundColor(t.textSecondary)
+            }
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 6) {
+                    ForEach(kanban.cards(in: col)) { card in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(card.title).font(.system(size: 12)).foregroundColor(t.textPrimary).lineLimit(3)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            HStack(spacing: 12) {
+                                if col > 0 { Button { kanban.move(card, by: -1) } label: { Image(systemName: "arrow.left") }.buttonStyle(.plain) }
+                                if col < 2 { Button { kanban.move(card, by: 1) } label: { Image(systemName: "arrow.right") }.buttonStyle(.plain) }
+                                Spacer()
+                                Button { kanban.remove(card) } label: { Image(systemName: "trash").foregroundColor(.red) }.buttonStyle(.plain)
+                            }.font(.system(size: 11)).foregroundColor(t.textSecondary)
+                        }
+                        .padding(8)
+                        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(t.surface.opacity(0.6)))
+                    }
+                }
+            }
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(t.surface.opacity(0.25)))
     }
 
     @ViewBuilder private func messageView(_ msg: ChatMessage) -> some View {
@@ -1794,17 +1988,9 @@ struct AskView: View {
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
-                    if selectableIds.contains(msg.id) {
-                        // Native NSTextView — drag-select ANY portion of the reply, copy freely.
-                        SelectableText(text: msg.text, color: NSColor(t.textPrimary))
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    } else {
-                        Markdown(msg.text)
-                            .markdownTextStyle { ForegroundColor(t.textPrimary); FontSize(16) }
-                            .markdownBlockStyle(\.codeBlock) { configuration in codeBlock(configuration) }
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
+                    // Native, always-selectable rendering: real bold/italic, clean copy.
+                    SelectableAttributedText(markdown: msg.text, color: NSColor(t.textPrimary), fontSize: 16)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     messageActions(msg)
                 }
             }
@@ -1822,7 +2008,7 @@ struct AskView: View {
             iconAction(copied ? "checkmark" : "doc.on.doc",
                        help: copied ? (ar ? "تم" : "Copied") : (ar ? "نسخ" : "Copy"),
                        active: copied) {
-                copyToPasteboard(msg.text); flashCopy(msg.id, code: false)
+                copyToPasteboard(SelectableAttributedText.plain(msg.text)); flashCopy(msg.id, code: false)
             }
             if msg.text.contains("```") {
                 iconAction(codeCopied ? "checkmark" : "curlybraces",
@@ -1839,11 +2025,6 @@ struct AskView: View {
             iconAction(down ? "hand.thumbsdown.fill" : "hand.thumbsdown",
                        help: ar ? "رد سيئ (يبلّغ هيرميس أنه لم يعجبني)" : "Bad answer", active: down) {
                 vm.rate(msg.id, up: false)
-            }
-            iconAction(selectableIds.contains(msg.id) ? "textformat.size" : "text.cursor",
-                       help: ar ? "تحديد النص (حدّد أي جزء)" : "Select text",
-                       active: selectableIds.contains(msg.id)) {
-                if selectableIds.contains(msg.id) { selectableIds.remove(msg.id) } else { selectableIds.insert(msg.id) }
             }
             moreMenu(msg)
             Spacer()
@@ -1909,7 +2090,7 @@ struct AskView: View {
         let help = copied ? (ar ? "تم" : "Copied")
                           : (codeOnly ? (ar ? "نسخ الكود" : "Copy code") : (ar ? "نسخ" : "Copy"))
         return iconAction(icon, help: help, active: copied) {
-            copyToPasteboard(codeOnly ? extractCode(text) : text)
+            copyToPasteboard(codeOnly ? extractCode(text) : SelectableAttributedText.plain(text))
             flashCopy(id, code: codeOnly)
         }
     }
