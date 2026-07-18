@@ -57,6 +57,7 @@ final class Settings: Codable {
     var thinkingSpeed: Double = 1.0         // motion speed multiplier (0.3–2.0)
     var thinkingIntensity: Double = 0.6     // brightness/opacity of the lights (0.1–1.0)
     var appearanceMode: String = "system"   // system | dark | light
+    var showSuggestions: Bool = true        // AI-generated follow-up question chips
     var serverManagedSessions: Bool = true   // use X-Hermes-Session-Id (Hermes holds history)
 
     // Saving mode: talk directly to a cheap model (no Hermes agent overhead).
@@ -107,7 +108,7 @@ final class Settings: Codable {
 
     private enum CodingKeys: String, CodingKey {
         case language, themeName, hotKey, newWindowHotKey, closeHotKey, layoutName, iconStyle, thinkingStyle, serverManagedSessions
-        case thinkingSpeed, thinkingIntensity, appearanceMode
+        case thinkingSpeed, thinkingIntensity, appearanceMode, showSuggestions
         case directHost, savingModel, savingVisionModel, deepModel, directKey, searchApiKey
         case host, apiKey, captureFullScreen, hiddenIcons, customThemes, cachedModels
         case savedTemplates, removedTemplates
@@ -132,6 +133,7 @@ final class Settings: Codable {
         thinkingSpeed = try c.decodeIfPresent(Double.self, forKey: .thinkingSpeed) ?? 1.0
         thinkingIntensity = try c.decodeIfPresent(Double.self, forKey: .thinkingIntensity) ?? 0.6
         appearanceMode = try c.decodeIfPresent(String.self, forKey: .appearanceMode) ?? "system"
+        showSuggestions = try c.decodeIfPresent(Bool.self, forKey: .showSuggestions) ?? true
         serverManagedSessions = try c.decodeIfPresent(Bool.self, forKey: .serverManagedSessions) ?? true
         directHost = try c.decodeIfPresent(String.self, forKey: .directHost) ?? "https://opencode.ai/zen/go/v1"
         savingModel = try c.decodeIfPresent(String.self, forKey: .savingModel) ?? "deepseek-v4-flash"

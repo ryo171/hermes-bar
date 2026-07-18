@@ -59,6 +59,7 @@ final class SettingsModel: ObservableObject {
     @Published var thinkingSpeed: Double { didSet { commit() } }
     @Published var thinkingIntensity: Double { didSet { commit() } }
     @Published var appearanceMode: String { didSet { commit() } }
+    @Published var showSuggestions: Bool { didSet { commit() } }
     @Published var serverManagedSessions: Bool { didSet { commit() } }
     @Published var directHost: String { didSet { commit() } }
     @Published var savingModel: String { didSet { commit() } }
@@ -85,6 +86,7 @@ final class SettingsModel: ObservableObject {
         thinkingSpeed = s.thinkingSpeed
         thinkingIntensity = s.thinkingIntensity
         appearanceMode = s.appearanceMode
+        showSuggestions = s.showSuggestions
         serverManagedSessions = s.serverManagedSessions
         directHost = s.directHost
         savingModel = s.savingModel
@@ -112,6 +114,7 @@ final class SettingsModel: ObservableObject {
         s.thinkingSpeed = thinkingSpeed
         s.thinkingIntensity = thinkingIntensity
         s.appearanceMode = appearanceMode
+        s.showSuggestions = showSuggestions
         s.serverManagedSessions = serverManagedSessions
         s.directHost = directHost
         s.savingModel = savingModel
@@ -217,6 +220,11 @@ struct SettingsView: View {
                             Text(ar ? "مضيء" : "Light").tag("light")
                         }
                         .labelsHidden().pickerStyle(.segmented).frame(width: 220)
+                    }
+                    row(ar ? "اقتراحات المتابعة" : "Follow-up suggestions") {
+                        Toggle("", isOn: $model.showSuggestions).labelsHidden().toggleStyle(.switch)
+                            .help(ar ? "أسئلة متابعة مقترحة بعد كل رد (تقدر تطفّيها)."
+                                     : "Suggested follow-up questions after each reply (can be turned off).")
                     }
                 }
 

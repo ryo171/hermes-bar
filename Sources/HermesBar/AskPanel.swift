@@ -288,7 +288,13 @@ struct SelectableAttributedText: NSViewRepresentable {
         return CGSize(width: width, height: ceil(h))
     }
 
+    // Memoize parsed results — sizeThatFits/updateNSView can run many times per layout
+    // pass, and re-parsing Markdown each call thrashed the CPU (froze the app).
+    private static var cache: [String: NSAttributedString] = [:]
+
     static func build(_ md: String, color: NSColor, fontSize: CGFloat, rtl: Bool) -> NSAttributedString {
+        let key = "\(rtl ? 1 : 0)|\(Int(fontSize))|\(color.hashValue)|\(md)"
+        if let hit = cache[key] { return hit }
         let opts = AttributedString.MarkdownParsingOptions(interpretedSyntax: .full,
                                                            failurePolicy: .returnPartiallyParsedIfPossible)
         let ns: NSMutableAttributedString
@@ -312,6 +318,8 @@ struct SelectableAttributedText: NSViewRepresentable {
         para.alignment = rtl ? .right : .left
         para.baseWritingDirection = rtl ? .rightToLeft : .leftToRight
         ns.addAttribute(.paragraphStyle, value: para, range: full)
+        if cache.count > 240 { cache.removeAll() }
+        cache[key] = ns
         return ns
     }
 
@@ -663,7 +671,7 @@ final class AskViewModel: ObservableObject {
     // Generate 3 short follow-up questions for the AI Chat layout — one cheap call to
     // the Saving model so it stays fast + low-cost regardless of the current mode.
     func fetchSuggestions() {
-        guard Settings.shared.layoutName == "aiChat" else { return }
+        guard Settings.shared.showSuggestions else { suggestions = []; return }
         let answer = lastAssistantText
         guard answer.count > 40 else { suggestions = []; return }
         let s = Settings.shared
@@ -1141,13 +1149,6 @@ final class AskPanelController: NSObject, NSWindowDelegate {
 
 // MARK: - SwiftUI content
 
-// Reports the bottom anchor's position inside the scroll view, so we can tell when
-// the user has scrolled up (and show the jump-to-latest button) vs at the bottom.
-struct HBBottomKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
-}
-
 // One rendered segment of an assistant reply: prose or a fenced code block.
 struct MsgSeg: Identifiable { let id = UUID(); let isCode: Bool; let content: String; let lang: String }
 
@@ -1158,11 +1159,12 @@ struct AskView: View {
     @State private var showAllHistory = false
     @State private var copiedMessageId: UUID?
     @State private var copiedCodeId: UUID?
-    @State private var bottomAnchorY: CGFloat = 0
-    @State private var scrollViewportH: CGFloat = 0
     @State private var showKanban = false
     @State private var kanbanInput = ""
     @ObservedObject private var kanban = KanbanStore.shared
+    @State private var showSchedule = false
+    @State private var scheduleDate = Date()
+    @State private var scheduleText = ""
 
     private let historyCap = 30   // render only recent turns in the light panel
 
@@ -1180,6 +1182,7 @@ struct AskView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .overlay(dropHighlight)
         .overlay { if showKanban { kanbanOverlay } }
+        .overlay { if showSchedule { scheduleOverlay } }
         .animation(.easeInOut(duration: 0.6), value: vm.isLoading)   // gradual light fade
         .preferredColorScheme(colorSchemeForMode)
         .environment(\.layoutDirection, ar ? .rightToLeft : .leftToRight)
@@ -1231,7 +1234,6 @@ struct AskView: View {
             aiHeader
             Divider().opacity(0.12)
             contentArea
-            if !vm.suggestions.isEmpty { aiSuggestions }
             if !vm.attachments.isEmpty { attachmentsRow }
             aiComposer
             Text(ar ? "قد يخطئ هيرميس — راجع المعلومات المهمة." : "Hermes can make mistakes — verify important info.")
@@ -1698,7 +1700,7 @@ struct AskView: View {
         case "tasks":
             iconButton("checklist", active: showKanban, help: ar ? "لوحة Kanban (بطاقات)" : "Kanban board (cards)") { showKanban.toggle() }
         case "schedule":
-            iconButton("calendar.badge.clock", active: false, help: ar ? "جدوِل مهمة (cron)" : "Schedule a task (cron)") { vm.applySchedulePrefix() }
+            iconButton("calendar.badge.clock", active: showSchedule, help: ar ? "جدولة تذكير" : "Schedule a reminder") { showSchedule.toggle() }
         default:
             EmptyView()
         }
@@ -1718,7 +1720,7 @@ struct AskView: View {
         case "spawn":   NotificationCenter.default.post(name: .hbSpawnWindow, object: nil)
         case "desktop": openHermesDesktop()
         case "tasks":   showKanban.toggle()
-        case "schedule": vm.applySchedulePrefix()
+        case "schedule": showSchedule.toggle()
         default: break
         }
     }
@@ -1871,24 +1873,17 @@ struct AskView: View {
                     if !vm.errorText.isEmpty {
                         Text(vm.errorText).font(.system(size: 14)).foregroundColor(.red).textSelection(.enabled)
                     }
+                    if !vm.suggestions.isEmpty { aiSuggestions }
                     Color.clear.frame(height: 1).id("BOTTOM_ANCHOR")
-                        .background(GeometryReader { g in
-                            Color.clear.preference(key: HBBottomKey.self, value: g.frame(in: .named("hbscroll")).maxY)
-                        })
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.vertical, 2)
             }
-            .coordinateSpace(name: "hbscroll")
-            .onPreferenceChange(HBBottomKey.self) { bottomAnchorY = $0 }
-            .background(GeometryReader { g in
-                Color.clear.onAppear { scrollViewportH = g.size.height }
-                    .onChange(of: g.size.height) { newH in scrollViewportH = newH }
-            })
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .overlay(alignment: .bottomLeading) {
-                // Show only when there's more than ~a screen of content below the fold.
-                if bottomAnchorY > scrollViewportH + 60 { scrollDownButton(proxy) }
+                // Simple, loop-free: shown once there's a conversation. (Geometry-based
+                // "hide at bottom" caused a render feedback loop / hang — removed.)
+                if vm.messages.count >= 2 { scrollDownButton(proxy) }
             }
         }
     }
@@ -1946,6 +1941,62 @@ struct AskView: View {
         }
     }
 
+    // MARK: - Schedule overlay (date+time form → sends a cron request to Hermes)
+
+    private var scheduleOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.35).onTapGesture { showSchedule = false }
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 8) {
+                    Image(systemName: "calendar.badge.clock").foregroundColor(t.accent)
+                    Text(ar ? "جدولة تذكير" : "Schedule a reminder").font(.system(size: 15, weight: .bold)).foregroundColor(t.textPrimary)
+                    Spacer()
+                    Button { showSchedule = false } label: {
+                        Image(systemName: "xmark.circle.fill").foregroundColor(t.textSecondary)
+                    }.buttonStyle(.plain)
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(ar ? "التاريخ والوقت (اليوم جاهز — عدّل الوقت)" : "Date & time (today prefilled — set the time)")
+                        .font(.system(size: 11)).foregroundColor(t.textSecondary)
+                    DatePicker("", selection: $scheduleDate, displayedComponents: [.date, .hourAndMinute])
+                        .labelsHidden().datePickerStyle(.field)
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(ar ? "نوع التذكير / النص" : "Reminder text").font(.system(size: 11)).foregroundColor(t.textSecondary)
+                    TextField(ar ? "مثال: اجتماع، اتصال، تجربة…" : "e.g. meeting, call, test…", text: $scheduleText)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { submitSchedule() }
+                }
+                HStack {
+                    Spacer()
+                    Button(ar ? "جدول" : "Schedule") { submitSchedule() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(scheduleText.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+            .padding(18)
+            .frame(maxWidth: 420)
+            .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(t.background))
+            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(t.textSecondary.opacity(0.2), lineWidth: 1))
+            .padding(24)
+        }
+    }
+
+    private func submitSchedule() {
+        let txt = scheduleText.trimmingCharacters(in: .whitespaces)
+        guard !txt.isEmpty else { return }
+        let df = DateFormatter()
+        df.locale = Locale(identifier: "en")
+        df.dateFormat = "yyyy-MM-dd HH:mm"
+        let stamp = df.string(from: scheduleDate)
+        vm.input = ar
+            ? "جدوِل تذكيراً في هيرميس (cron) بتاريخ ووقت \(stamp): \(txt)"
+            : "Schedule a Hermes reminder (cron) at \(stamp): \(txt)"
+        vm.send()
+        scheduleText = ""
+        showSchedule = false
+    }
+
     private func kanbanColumn(_ col: Int, _ title: String) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
@@ -1957,7 +2008,8 @@ struct AskView: View {
                 VStack(spacing: 6) {
                     ForEach(kanban.cards(in: col)) { card in
                         VStack(alignment: .leading, spacing: 6) {
-                            Text(card.title).font(.system(size: 12)).foregroundColor(t.textPrimary).lineLimit(3)
+                            Text(card.title).font(.system(size: 12)).foregroundColor(t.textPrimary)
+                                .fixedSize(horizontal: false, vertical: true)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             HStack(spacing: 12) {
                                 if col > 0 { Button { kanban.move(card, by: -1) } label: { Image(systemName: "arrow.left") }.buttonStyle(.plain) }
