@@ -413,6 +413,7 @@ final class AskViewModel: ObservableObject {
     @Published var errorText: String = ""
     @Published var isLoading: Bool = false
     @Published var queued: String?   // text typed while a turn is running; auto-sent on finish
+    @Published var suggestions: [String] = []   // AI-generated follow-up questions (AI Chat layout)
     @Published var streamingMessageId: UUID?   // the message currently being streamed (rendered as plain text)
     @Published var elapsed: TimeInterval = 0
     @Published var pinMode: PinMode = PinMode(rawValue: UserDefaults.standard.string(forKey: "hb.pinmode") ?? "off") ?? .off
@@ -551,6 +552,37 @@ final class AskViewModel: ObservableObject {
         if !input.hasPrefix(prefix) { input = prefix + input }
     }
 
+    // Generate 3 short follow-up questions for the AI Chat layout — one cheap call to
+    // the Saving model so it stays fast + low-cost regardless of the current mode.
+    func fetchSuggestions() {
+        guard Settings.shared.layoutName == "aiChat" else { return }
+        let answer = lastAssistantText
+        guard answer.count > 40 else { suggestions = []; return }
+        let s = Settings.shared
+        let ar = isArabic
+        let prompt = (ar ? "هذه إجابة:\n" : "Answer:\n") + String(answer.prefix(1400))
+            + (ar ? "\n\nاقترح ٣ أسئلة متابعة قصيرة جداً. سطر لكل سؤال، بدون ترقيم ولا مقدمات."
+                  : "\n\nSuggest 3 very short follow-up questions. One per line, no numbering or preamble.")
+        var acc = ""
+        _ = HermesClient.shared.askStream(
+            host: s.directHost,
+            conversation: [["role": "user", "content": prompt]],
+            reasoningEffort: nil,
+            sessionId: nil,
+            includeSystem: false,
+            apiKey: s.resolvedDirectKey(),
+            model: s.savingModel,
+            webSearch: false,
+            onDelta: { piece in acc += piece },
+            onSession: { _ in },
+            onDone: { [weak self] _ in
+                let lines = acc.split(separator: "\n").map { $0.trimmingCharacters(in: CharacterSet(charactersIn: " -•*\t")) }
+                    .filter { $0.count > 4 }.prefix(3).map(String.init)
+                self?.suggestions = Array(lines)
+            }
+        )
+    }
+
     func addAttachment(_ url: URL) {
         if !attachments.contains(where: { $0.url == url }) { attachments.append(AttachmentItem(url: url)) }
     }
@@ -592,6 +624,7 @@ final class AskViewModel: ObservableObject {
             return
         }
         errorText = ""
+        suggestions = []
         isLoading = true
         startTimer()
 
@@ -799,6 +832,8 @@ final class AskViewModel: ObservableObject {
             queued = nil
             input = q
             send()
+        } else if errorText.isEmpty, !lastAssistantText.isEmpty {
+            fetchSuggestions()   // offer follow-ups (AI Chat layout only)
         }
     }
 
@@ -1070,11 +1105,29 @@ struct AskView: View {
             aiHeader
             Divider().opacity(0.12)
             contentArea
+            if !vm.suggestions.isEmpty { aiSuggestions }
             if !vm.attachments.isEmpty { attachmentsRow }
             aiComposer
             Text(ar ? "قد يخطئ هيرميس — راجع المعلومات المهمة." : "Hermes can make mistakes — verify important info.")
                 .font(.system(size: 10)).foregroundColor(t.textSecondary.opacity(0.7))
                 .frame(maxWidth: .infinity, alignment: .center)
+        }
+    }
+
+    // Tappable AI-generated follow-up questions (the "→ question" list from the ref).
+    private var aiSuggestions: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            ForEach(vm.suggestions, id: \.self) { s in
+                Button { vm.input = s; vm.send() } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "arrow.right").font(.system(size: 11)).foregroundColor(t.accent)
+                        Text(s).font(.system(size: 13)).foregroundColor(t.textPrimary).lineLimit(2)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 10).padding(.vertical, 8)
+                    .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(t.surface.opacity(0.4)))
+                }.buttonStyle(SpringPopButtonStyle())
+            }
         }
     }
 
@@ -1629,23 +1682,31 @@ struct AskView: View {
         !vm.input.trimmingCharacters(in: .whitespaces).isEmpty || !vm.attachments.isEmpty
     }
 
+    // Attachments as clean source-cards: a tinted icon tile + middle-truncated name.
     private var attachmentsRow: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 ForEach(vm.attachments) { att in
-                    HStack(spacing: 5) {
-                        Image(systemName: att.symbol).font(.system(size: 11)).foregroundColor(t.accent)
-                        Text(att.name).font(.system(size: 12)).foregroundColor(t.textPrimary).lineLimit(1)
+                    HStack(spacing: 8) {
+                        Image(systemName: att.symbol)
+                            .font(.system(size: 13)).foregroundColor(t.accent)
+                            .frame(width: 26, height: 26)
+                            .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(t.accent.opacity(0.15)))
+                        Text(att.name)
+                            .font(.system(size: 12)).foregroundColor(t.textPrimary)
+                            .lineLimit(1).truncationMode(.middle).frame(maxWidth: 130, alignment: .leading)
                         Button(action: { vm.removeAttachment(att) }) {
-                            Image(systemName: "xmark.circle.fill").font(.system(size: 12)).foregroundColor(t.textSecondary)
+                            Image(systemName: "xmark.circle.fill").font(.system(size: 13)).foregroundColor(t.textSecondary)
                         }.buttonStyle(.plain)
                     }
-                    .padding(.horizontal, 8).padding(.vertical, 4)
-                    .background(Capsule().fill(t.surface))
+                    .padding(.horizontal, 8).padding(.vertical, 6)
+                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(t.surface.opacity(0.55)))
+                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(t.textSecondary.opacity(0.15), lineWidth: 1))
                 }
             }
+            .padding(.vertical, 1)
         }
-        .frame(maxHeight: 30)
+        .frame(maxHeight: 44)
     }
 
     private var visibleMessages: [ChatMessage] {
