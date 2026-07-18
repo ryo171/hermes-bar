@@ -253,6 +253,7 @@ struct SelectableText: NSViewRepresentable {
 struct SelectableAttributedText: NSViewRepresentable {
     let markdown: String
     var color: NSColor
+    var rtl: Bool = false
     var fontSize: CGFloat = 15
 
     func makeNSView(context: Context) -> SelfSizingTextView {
@@ -265,17 +266,21 @@ struct SelectableAttributedText: NSViewRepresentable {
         tv.isVerticallyResizable = true
         tv.isHorizontallyResizable = false
         tv.textContainer?.widthTracksTextView = true
+        tv.alignment = rtl ? .right : .left
+        tv.baseWritingDirection = rtl ? .rightToLeft : .leftToRight
         return tv
     }
 
     func updateNSView(_ tv: SelfSizingTextView, context: Context) {
-        tv.textStorage?.setAttributedString(Self.build(markdown, color: color, fontSize: fontSize))
+        tv.textStorage?.setAttributedString(Self.build(markdown, color: color, fontSize: fontSize, rtl: rtl))
+        tv.alignment = rtl ? .right : .left
+        tv.baseWritingDirection = rtl ? .rightToLeft : .leftToRight
         tv.invalidateIntrinsicContentSize()
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: SelfSizingTextView, context: Context) -> CGSize? {
         let width = proposal.width ?? 400
-        nsView.textStorage?.setAttributedString(Self.build(markdown, color: color, fontSize: fontSize))
+        nsView.textStorage?.setAttributedString(Self.build(markdown, color: color, fontSize: fontSize, rtl: rtl))
         guard let tc = nsView.textContainer, let lm = nsView.layoutManager else { return nil }
         tc.containerSize = NSSize(width: width, height: .greatestFiniteMagnitude)
         lm.ensureLayout(for: tc)
@@ -283,7 +288,7 @@ struct SelectableAttributedText: NSViewRepresentable {
         return CGSize(width: width, height: ceil(h))
     }
 
-    static func build(_ md: String, color: NSColor, fontSize: CGFloat) -> NSAttributedString {
+    static func build(_ md: String, color: NSColor, fontSize: CGFloat, rtl: Bool) -> NSAttributedString {
         let opts = AttributedString.MarkdownParsingOptions(interpretedSyntax: .full,
                                                            failurePolicy: .returnPartiallyParsedIfPossible)
         let ns: NSMutableAttributedString
@@ -302,6 +307,11 @@ struct SelectableAttributedText: NSViewRepresentable {
             ns.addAttribute(.font, value: f, range: range)
         }
         ns.addAttribute(.foregroundColor, value: color, range: full)
+        // Right-align + RTL base direction for Arabic so text hugs the right edge.
+        let para = NSMutableParagraphStyle()
+        para.alignment = rtl ? .right : .left
+        para.baseWritingDirection = rtl ? .rightToLeft : .leftToRight
+        ns.addAttribute(.paragraphStyle, value: para, range: full)
         return ns
     }
 
@@ -1137,6 +1147,9 @@ struct HBBottomKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }
+
+// One rendered segment of an assistant reply: prose or a fenced code block.
+struct MsgSeg: Identifiable { let id = UUID(); let isCode: Bool; let content: String; let lang: String }
 
 struct AskView: View {
     @ObservedObject var vm: AskViewModel
@@ -1988,9 +2001,9 @@ struct AskView: View {
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
-                    // Native, always-selectable rendering: real bold/italic, clean copy.
-                    SelectableAttributedText(markdown: msg.text, color: NSColor(t.textPrimary), fontSize: 16)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    // Native, always-selectable rendering (clean copy, RTL-aware) with
+                    // code blocks shown as rectangles that have their own copy button.
+                    assistantBody(msg.text)
                     messageActions(msg)
                 }
             }
@@ -2221,6 +2234,67 @@ struct AskView: View {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(s, forType: .string)
+    }
+
+    // Render an assistant reply: prose runs (selectable, RTL-aware) + code blocks
+    // (rectangle with a one-tap copy button).
+    @ViewBuilder private func assistantBody(_ text: String) -> some View {
+        let segs = splitIntoSegments(text)
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(segs) { seg in
+                if seg.isCode {
+                    codeBlockView(seg.content, lang: seg.lang)
+                } else if !seg.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    SelectableAttributedText(markdown: seg.content, color: NSColor(t.textPrimary), rtl: ar, fontSize: 16)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func splitIntoSegments(_ text: String) -> [MsgSeg] {
+        var segs: [MsgSeg] = []
+        let parts = text.components(separatedBy: "```")
+        for (i, part) in parts.enumerated() {
+            if i % 2 == 0 {
+                if !part.isEmpty { segs.append(MsgSeg(isCode: false, content: part, lang: "")) }
+            } else {
+                var body = part
+                var lang = ""
+                if let nl = body.firstIndex(of: "\n") {
+                    lang = String(body[..<nl]).trimmingCharacters(in: .whitespaces)
+                    body = String(body[body.index(after: nl)...])
+                }
+                segs.append(MsgSeg(isCode: true, content: body, lang: lang))
+            }
+        }
+        if segs.isEmpty { segs.append(MsgSeg(isCode: false, content: text, lang: "")) }
+        return segs
+    }
+
+    // A code block rectangle with a language label + one-tap copy button.
+    private func codeBlockView(_ code: String, lang: String) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text(lang.isEmpty ? "code" : lang)
+                    .font(.system(size: 10, weight: .medium, design: .monospaced)).foregroundColor(t.textSecondary)
+                Spacer()
+                Button { copyToPasteboard(code) } label: {
+                    Image(systemName: "doc.on.doc").font(.system(size: 11)).foregroundColor(t.textSecondary)
+                }.buttonStyle(.plain).help(ar ? "نسخ الكود" : "Copy code")
+            }
+            .padding(.horizontal, 10).padding(.top, 6)
+            ScrollView(.horizontal, showsIndicators: false) {
+                Text(code)
+                    .font(.system(size: 13, design: .monospaced)).foregroundColor(t.textPrimary)
+                    .textSelection(.enabled).padding(10)
+            }
+        }
+        .environment(\.layoutDirection, .leftToRight)
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(t.surface))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(t.textSecondary.opacity(0.15), lineWidth: 1))
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func codeBlock(_ configuration: CodeBlockConfiguration) -> some View {
