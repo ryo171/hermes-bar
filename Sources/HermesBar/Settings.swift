@@ -79,6 +79,10 @@ final class Settings: Codable {
     // User-made themes (color + transparency), editable in Settings.
     var customThemes: [CustomThemeData] = []
 
+    // Templates the user saved, and ids of built-in templates they deleted.
+    var savedTemplates: [SavedTemplate] = []
+    var removedTemplates: [String] = []
+
     // Last-fetched provider model ids — cached so the in-panel model picker works
     // without re-fetching every time.
     var cachedModels: [String] = []
@@ -106,6 +110,7 @@ final class Settings: Codable {
         case thinkingSpeed, thinkingIntensity, appearanceMode
         case directHost, savingModel, savingVisionModel, deepModel, directKey, searchApiKey
         case host, apiKey, captureFullScreen, hiddenIcons, customThemes, cachedModels
+        case savedTemplates, removedTemplates
     }
 
     init() {}
@@ -140,6 +145,8 @@ final class Settings: Codable {
         hiddenIcons = try c.decodeIfPresent([String].self, forKey: .hiddenIcons) ?? []
         customThemes = try c.decodeIfPresent([CustomThemeData].self, forKey: .customThemes) ?? []
         cachedModels = try c.decodeIfPresent([String].self, forKey: .cachedModels) ?? []
+        savedTemplates = try c.decodeIfPresent([SavedTemplate].self, forKey: .savedTemplates) ?? []
+        removedTemplates = try c.decodeIfPresent([String].self, forKey: .removedTemplates) ?? []
     }
 
     static func load() -> Settings {

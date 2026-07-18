@@ -8,7 +8,7 @@ import MarkdownUI
 enum PinMode: String { case off, here, everywhere }
 
 enum PanelLayout: String, CaseIterable {
-    case classic, chat, rail, minimal, aurora, commandDeck, palette
+    case classic, chat, rail, minimal, aurora, commandDeck, palette, aiChat
     var label: String {
         switch self {
         case .classic: return "Classic"
@@ -18,6 +18,7 @@ enum PanelLayout: String, CaseIterable {
         case .aurora:  return "Aurora Canvas"
         case .commandDeck: return "Command Deck"
         case .palette: return "Command Palette"
+        case .aiChat:  return "AI Chat"
         }
     }
 }
@@ -1058,7 +1059,83 @@ struct AskView: View {
         case .aurora:  auroraLayout
         case .commandDeck: commandDeckLayout
         case .palette: paletteLayout
+        case .aiChat: aiChatLayout
         }
+    }
+
+    // AI Chat — faithful to the reference: a header (title + actions), the thread,
+    // a rounded composer with a model pill and an action row, and a footer note.
+    private var aiChatLayout: some View {
+        VStack(spacing: 8) {
+            aiHeader
+            Divider().opacity(0.12)
+            contentArea
+            if !vm.attachments.isEmpty { attachmentsRow }
+            aiComposer
+            Text(ar ? "قد يخطئ هيرميس — راجع المعلومات المهمة." : "Hermes can make mistakes — verify important info.")
+                .font(.system(size: 10)).foregroundColor(t.textSecondary.opacity(0.7))
+                .frame(maxWidth: .infinity, alignment: .center)
+        }
+    }
+
+    private var aiHeader: some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "bubble.left.and.text.bubble.right").foregroundColor(t.textSecondary).font(.system(size: 13))
+                Text(ar ? "محادثة جديدة" : "New AI chat").font(.system(size: 14, weight: .semibold)).foregroundColor(t.textPrimary)
+                Image(systemName: "chevron.down").font(.system(size: 10)).foregroundColor(t.textSecondary)
+            }
+            Spacer()
+            aiHeaderBtn("square.and.pencil", ar ? "جديد" : "New") { vm.newChat() }
+            aiHeaderBtn(vm.withScreenshot ? "eye.fill" : "eye.slash", ar ? "الشاشة" : "Screen") { vm.setWithScreenshot(!vm.withScreenshot) }
+            aiHeaderBtn("square.and.arrow.up", ar ? "مشاركة" : "Share") { shareText(vm.lastAssistantText) }
+            aiHeaderBtn("macwindow.on.rectangle", ar ? "ديسكتوب" : "Desktop") { openHermesDesktop() }
+        }
+    }
+
+    private func aiHeaderBtn(_ icon: String, _ help: String, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon).font(.system(size: 12)).foregroundColor(t.textSecondary)
+                .frame(width: 28, height: 28)
+                .background(Circle().fill(t.surface.opacity(0.5)))
+                .overlay(Circle().strokeBorder(t.textSecondary.opacity(0.15)))
+        }.buttonStyle(SpringPopButtonStyle()).help(help)
+    }
+
+    private var aiComposer: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let q = vm.queued, !q.isEmpty { queuedBanner(q) }
+            ZStack(alignment: .topLeading) {
+                if vm.input.isEmpty {
+                    Text(vm.isLoading ? (ar ? "اكتب وسيُرسل تلقائياً…" : "Type — auto-sends…") : (ar ? "اسأل هيرميس أي شيء…" : "Ask Hermes anything…"))
+                        .foregroundColor(t.textSecondary).font(.system(size: 15)).padding(.top, 2).allowsHitTesting(false)
+                }
+                MultilineInput(text: $vm.input, textColor: NSColor(t.textPrimary), onSend: { vm.send() })
+                    .frame(minHeight: 24, maxHeight: 90)
+            }
+            HStack(spacing: 8) {
+                aiCircleBtn("plus") { openFilePicker() }
+                modelPicker
+                aiCircleBtn(vm.savingMode ? "leaf.fill" : "brain") { vm.toggleSaving() }
+                if vm.savingMode { aiCircleBtn(vm.webSearch ? "globe" : "globe.badge.chevron.backward") { vm.toggleWebSearch() } }
+                if !moreIconIds.isEmpty { moreIconsMenu }
+                Spacer()
+                sendOrStop
+            }
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 18, style: .continuous)
+            .fill(t.surface.opacity(0.5))
+            .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(t.textSecondary.opacity(0.16), lineWidth: 1)))
+    }
+
+    private func aiCircleBtn(_ icon: String, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon).font(.system(size: 13)).foregroundColor(t.textSecondary)
+                .frame(width: 30, height: 30)
+                .background(Circle().fill(t.surface.opacity(0.55)))
+                .overlay(Circle().strokeBorder(t.textSecondary.opacity(0.15)))
+        }.buttonStyle(SpringPopButtonStyle())
     }
 
     // Command Palette — faithful to the Raycast-style reference: a search-style input

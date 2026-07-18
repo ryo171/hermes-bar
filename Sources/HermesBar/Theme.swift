@@ -77,6 +77,16 @@ struct Theme: Identifiable {
     }
 }
 
+// A user-saved template: a named bundle of theme + layout + which icons stay on the
+// surface. Fully editable/removable by the user.
+struct SavedTemplate: Codable, Identifiable, Equatable {
+    var id = UUID()
+    var label: String = "My Template"
+    var themeName: String
+    var layout: String
+    var hidden: [String]
+}
+
 // A user-made theme: two colours (background + accent) plus a glass/opacity choice.
 // Surface + text colours are derived so the user only picks what matters.
 struct CustomThemeData: Codable, Identifiable, Equatable {

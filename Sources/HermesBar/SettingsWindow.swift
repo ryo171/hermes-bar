@@ -68,6 +68,8 @@ final class SettingsModel: ObservableObject {
     @Published var searchApiKey: String { didSet { commit() } }
     @Published var hiddenIcons: [String] { didSet { commit() } }
     @Published var customThemes: [CustomThemeData] { didSet { commit() } }
+    @Published var savedTemplates: [SavedTemplate] { didSet { commit() } }
+    @Published var removedTemplates: [String] { didSet { commit() } }
 
     init() {
         let s = Settings.shared
@@ -92,6 +94,8 @@ final class SettingsModel: ObservableObject {
         searchApiKey = s.searchApiKey
         hiddenIcons = s.hiddenIcons
         customThemes = s.customThemes
+        savedTemplates = s.savedTemplates
+        removedTemplates = s.removedTemplates
     }
 
     private func commit() {
@@ -117,6 +121,8 @@ final class SettingsModel: ObservableObject {
         s.searchApiKey = searchApiKey
         s.hiddenIcons = hiddenIcons
         s.customThemes = customThemes
+        s.savedTemplates = savedTemplates
+        s.removedTemplates = removedTemplates
         s.save()
     }
 }
@@ -394,13 +400,27 @@ struct SettingsView: View {
 
     private var templatesSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(ar ? "قوالب جاهزة" : "Templates").font(.system(size: 12, weight: .semibold))
-            Text(ar ? "اختر قالباً كبداية ثم عدّل عليه بحرية." : "Pick a starting look, then tweak freely.")
+            HStack {
+                Text(ar ? "قوالب جاهزة" : "Templates").font(.system(size: 12, weight: .semibold))
+                Spacer()
+                Button(ar ? "احفظ الحالي" : "Save current") { saveCurrentTemplate() }.font(.system(size: 11))
+            }
+            Text(ar ? "اضغط لتطبيق قالب، أو ✕ لحذف أي قالب (حتى الجاهزة)." : "Tap to apply, ✕ to delete any template (even built-ins).")
                 .font(.system(size: 11)).foregroundColor(.secondary)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 10) {
-                    ForEach(DesignTemplate.all) { tpl in
-                        Button { applyTemplate(tpl) } label: { templateChip(tpl) }.buttonStyle(.plain)
+                    ForEach(visibleBuiltinTemplates) { tpl in
+                        templateChipDeletable(label: tpl.title(ar), themeName: tpl.themeName, layout: tpl.layout,
+                                              swatch: tpl.swatch, accent: tpl.accent,
+                                              apply: { applyTemplate(tpl.themeName, tpl.layout, tpl.hidden) },
+                                              delete: { model.removedTemplates.append(tpl.id) })
+                    }
+                    ForEach(model.savedTemplates) { st in
+                        let th = Theme.byName(st.themeName)
+                        templateChipDeletable(label: st.label, themeName: st.themeName, layout: st.layout,
+                                              swatch: th.background, accent: th.accent,
+                                              apply: { applyTemplate(st.themeName, st.layout, st.hidden) },
+                                              delete: { model.savedTemplates.removeAll { $0.id == st.id } })
                     }
                 }
                 .padding(.vertical, 2)
@@ -408,27 +428,44 @@ struct SettingsView: View {
         }
     }
 
-    private func templateChip(_ tpl: DesignTemplate) -> some View {
-        let selected = model.themeName == tpl.themeName && model.layoutName == tpl.layout
+    private var visibleBuiltinTemplates: [DesignTemplate] {
+        DesignTemplate.all.filter { !model.removedTemplates.contains($0.id) }
+    }
+
+    private func templateChipDeletable(label: String, themeName: String, layout: String,
+                                       swatch: Color, accent: Color,
+                                       apply: @escaping () -> Void, delete: @escaping () -> Void) -> some View {
+        let selected = model.themeName == themeName && model.layoutName == layout
         return VStack(spacing: 6) {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(tpl.swatch)
+                .fill(swatch)
                 .frame(width: 84, height: 48)
-                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(tpl.accent, lineWidth: 2).opacity(0.9))
-                .overlay(alignment: .bottomLeading) {
-                    Circle().fill(tpl.accent).frame(width: 12, height: 12).padding(6)
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(accent, lineWidth: 2).opacity(0.9))
+                .overlay(alignment: .bottomLeading) { Circle().fill(accent).frame(width: 12, height: 12).padding(6) }
+                .overlay(alignment: .topTrailing) {
+                    Button { delete() } label: {
+                        Image(systemName: "xmark.circle.fill").font(.system(size: 14)).foregroundColor(.white.opacity(0.85))
+                    }.buttonStyle(.plain).padding(3)
                 }
-            Text(tpl.title(ar)).font(.system(size: 11)).lineLimit(1)
+                .contentShape(Rectangle())
+                .onTapGesture { apply() }
+            Text(label).font(.system(size: 11)).lineLimit(1)
         }
         .padding(6)
         .background(RoundedRectangle(cornerRadius: 10).fill(selected ? Color.accentColor.opacity(0.18) : Color.clear))
         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(selected ? Color.accentColor : Color.clear, lineWidth: 1.5))
     }
 
-    private func applyTemplate(_ tpl: DesignTemplate) {
-        model.themeName = tpl.themeName
-        model.layoutName = tpl.layout
-        model.hiddenIcons = tpl.hidden
+    private func applyTemplate(_ themeName: String, _ layout: String, _ hidden: [String]) {
+        model.themeName = themeName
+        model.layoutName = layout
+        model.hiddenIcons = hidden
+    }
+
+    private func saveCurrentTemplate() {
+        let name = (ar ? "قالبي " : "My Template ") + "\(model.savedTemplates.count + 1)"
+        model.savedTemplates.append(SavedTemplate(label: name, themeName: model.themeName,
+                                                  layout: model.layoutName, hidden: model.hiddenIcons))
     }
 
     // MARK: - Theme customizer (colours + transparency → save as a theme)
@@ -547,6 +584,7 @@ struct SettingsView: View {
         case .aurora:  return ar ? "لوحة الشفق" : "Aurora Canvas"
         case .commandDeck: return ar ? "لوحة القيادة" : "Command Deck"
         case .palette: return ar ? "لوحة الأوامر" : "Command Palette"
+        case .aiChat:  return ar ? "دردشة AI" : "AI Chat"
         }
     }
 
@@ -600,5 +638,14 @@ struct DesignTemplate: Identifiable {
         DesignTemplate(id: "coral", labelAr: "مرجاني", labelEn: "Coral",
                        themeName: "hb-coral", layout: "chat", hidden: ["scrape", "desktop"],
                        swatch: Color(red: 0.14, green: 0.06, blue: 0.08), accent: Color(red: 0.94, green: 0.52, blue: 0.37)),
+        DesignTemplate(id: "aichat", labelAr: "دردشة AI", labelEn: "AI Chat",
+                       themeName: "hb-graphite", layout: "aiChat", hidden: ["scrape", "spawn"],
+                       swatch: Color(red: 0.09, green: 0.09, blue: 0.12), accent: Color(red: 0.56, green: 0.64, blue: 1.0)),
+        DesignTemplate(id: "deck", labelAr: "لوحة القيادة", labelEn: "Command Deck",
+                       themeName: "midnight", layout: "commandDeck", hidden: [],
+                       swatch: Color(red: 0.06, green: 0.07, blue: 0.15), accent: Color(red: 0.49, green: 0.55, blue: 1.0)),
+        DesignTemplate(id: "cmdpalette", labelAr: "لوحة الأوامر", labelEn: "Command Palette",
+                       themeName: "hb-graphite", layout: "palette", hidden: ["spawn", "desktop"],
+                       swatch: Color(red: 0.10, green: 0.10, blue: 0.13), accent: Color(red: 0.56, green: 0.64, blue: 1.0)),
     ]
 }
