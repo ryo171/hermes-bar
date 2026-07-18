@@ -8,13 +8,14 @@ import MarkdownUI
 enum PinMode: String { case off, here, everywhere }
 
 enum PanelLayout: String, CaseIterable {
-    case classic, chat, rail, minimal
+    case classic, chat, rail, minimal, aurora
     var label: String {
         switch self {
         case .classic: return "Classic"
         case .chat:    return "Chat"
         case .rail:    return "Rail"
         case .minimal: return "Minimal"
+        case .aurora:  return "Aurora Canvas"
         }
     }
 }
@@ -98,6 +99,8 @@ struct SpringPopButtonStyle: ButtonStyle {
 // the content — NOT on the window edges. It drifts + hue-rotates while loading and
 // fades down the panel via a mask, so only the upper area is tinted.
 struct ThinkingWash: View {
+    var speed: Double = 1.0
+    var intensity: Double = 0.6
     private let colors: [Color] = [
         Color(red: 0.42, green: 0.55, blue: 1.00),   // blue
         Color(red: 0.30, green: 0.85, blue: 0.80),   // teal
@@ -108,12 +111,12 @@ struct ThinkingWash: View {
     ]
     var body: some View {
         TimelineView(.animation) { timeline in
-            let t = timeline.date.timeIntervalSinceReferenceDate
+            let t = timeline.date.timeIntervalSinceReferenceDate * speed
             LinearGradient(gradient: Gradient(colors: colors),
                            startPoint: UnitPoint(x: 0.5 + 0.5 * cos(t * 0.55), y: 0.0),
                            endPoint: UnitPoint(x: 0.5 + 0.5 * sin(t * 0.42), y: 1.0))
                 .hueRotation(.degrees(t * 26))
-                .opacity(0.60)
+                .opacity(intensity)
                 .blur(radius: 42)
                 .mask(
                     LinearGradient(colors: [.white, .white.opacity(0.28), .clear],
@@ -127,6 +130,8 @@ struct ThinkingWash: View {
 // Circular drifting colour blobs behind the top of the panel (alternative to the
 // top wash) — a soft "aurora" that morphs while thinking.
 struct RadialAurora: View {
+    var speed: Double = 1.0
+    var intensity: Double = 0.5
     private let colors: [Color] = [
         Color(red: 0.42, green: 0.55, blue: 1.00),
         Color(red: 0.30, green: 0.85, blue: 0.80),
@@ -135,20 +140,20 @@ struct RadialAurora: View {
     ]
     var body: some View {
         TimelineView(.animation) { tl in
-            let t = tl.date.timeIntervalSinceReferenceDate
+            let t = tl.date.timeIntervalSinceReferenceDate * speed
             ZStack {
                 ForEach(0..<colors.count, id: \.self) { i in
                     Circle()
                         .fill(colors[i])
-                        .frame(width: 200, height: 200)
-                        .offset(x: CGFloat(cos(t * 0.5 + Double(i) * 1.7)) * 80,
-                                y: CGFloat(sin(t * 0.42 + Double(i) * 1.3)) * 50)
-                        .blur(radius: 60)
+                        .frame(width: 220, height: 220)
+                        .offset(x: CGFloat(cos(t * 0.5 + Double(i) * 1.7)) * 90,
+                                y: CGFloat(sin(t * 0.42 + Double(i) * 1.3)) * 60)
+                        .blur(radius: 65)
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .opacity(0.5)
-            .mask(LinearGradient(colors: [.white, .white.opacity(0.2), .clear], startPoint: .top, endPoint: .bottom))
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            .opacity(intensity)
+            .mask(LinearGradient(colors: [.white, .white.opacity(0.5), .white.opacity(0.15)], startPoint: .top, endPoint: .bottom))
         }
         .allowsHitTesting(false)
     }
@@ -910,6 +915,7 @@ final class AskPanelController: NSObject, NSWindowDelegate {
         }
         ensurePanel()
         applyPinBehavior()
+        applyAppearance()
         // Centre only the first time; afterwards the window reappears exactly where
         // the user left it (e.g. a screen corner), preserving position on Show.
         if !hasPositioned {
@@ -949,7 +955,17 @@ final class AskPanelController: NSObject, NSWindowDelegate {
         onClosed?()
     }
 
-    func applyTheme() { viewModel.refreshFromSettings() }
+    func applyTheme() { viewModel.refreshFromSettings(); applyAppearance() }
+
+    // Follow the user's appearance choice (system / dark / light) at the window level
+    // so the glass material + native chrome flip too, not just SwiftUI content.
+    private func applyAppearance() {
+        switch Settings.shared.appearanceMode {
+        case "dark":  panel?.appearance = NSAppearance(named: .darkAqua)
+        case "light": panel?.appearance = NSAppearance(named: .aqua)
+        default:      panel?.appearance = nil
+        }
+    }
 
     func windowDidResignKey(_ notification: Notification) {
         if Date() < ignoreResignUntil { return }
@@ -991,15 +1007,44 @@ struct AskView: View {
     private var ar: Bool { vm.isArabic }
 
     var body: some View {
-        layoutBody
-            .padding(16)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(background)
-            .overlay(dropHighlight)
-            .animation(.easeInOut(duration: 0.5), value: vm.isLoading)
-            .environment(\.layoutDirection, ar ? .rightToLeft : .leftToRight)
-            .onExitCommand { vm.onClose?() }
-            .onDrop(of: [UTType.fileURL], isTargeted: $dropTargeted) { providers in handleDrop(providers) }
+        ZStack {
+            baseBackground
+            auroraOrThinkingLayer          // living lights (behind content)
+            layoutBody
+                .padding(16)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .overlay(dropHighlight)
+        .animation(.easeInOut(duration: 0.6), value: vm.isLoading)   // gradual light fade
+        .preferredColorScheme(colorSchemeForMode)
+        .environment(\.layoutDirection, ar ? .rightToLeft : .leftToRight)
+        .onExitCommand { vm.onClose?() }
+        .onDrop(of: [UTType.fileURL], isTargeted: $dropTargeted) { providers in handleDrop(providers) }
+    }
+
+    // Appearance override: nil = follow the system (macOS light/dark).
+    private var colorSchemeForMode: ColorScheme? {
+        switch Settings.shared.appearanceMode {
+        case "dark":  return .dark
+        case "light": return .light
+        default:      return nil
+        }
+    }
+
+    // The living-lights layer: an always-on hero in Aurora Canvas; thinking-only in
+    // the other layouts. Fades in/out gradually (never a hard cut).
+    @ViewBuilder private var auroraOrThinkingLayer: some View {
+        let sp = Settings.shared.thinkingSpeed
+        let it = Settings.shared.thinkingIntensity
+        if vm.layout == .aurora {
+            RadialAurora(speed: sp, intensity: it * (vm.isLoading ? 1.0 : 0.55))
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        } else if vm.isLoading {
+            thinkingBackground
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .transition(.opacity)
+        }
     }
 
     @ViewBuilder private var layoutBody: some View {
@@ -1008,6 +1053,42 @@ struct AskView: View {
         case .chat:    chatLayout
         case .rail:    railLayout
         case .minimal: minimalLayout
+        case .aurora:  auroraLayout
+        }
+    }
+
+    // Aurora Canvas — a distinct, roomy layout: minimal top bar, an airy answer area
+    // over the living aurora, and a big rounded composer card at the bottom.
+    private var auroraLayout: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "sparkles").foregroundColor(t.accent).font(.system(size: 13, weight: .semibold))
+                Text("Hermes").font(.system(size: 13, weight: .semibold)).foregroundColor(t.textSecondary)
+                Spacer()
+                modelPicker
+            }
+            .padding(.bottom, 6)
+
+            contentArea.frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            if !vm.attachments.isEmpty { attachmentsRow }
+
+            VStack(alignment: .leading, spacing: 8) {
+                inputField
+                HStack(spacing: 7) {
+                    controlIcons
+                    Spacer()
+                    sendOrStop
+                }
+            }
+            .padding(14)
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(t.surface.opacity(0.55))
+                    .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .strokeBorder(t.textSecondary.opacity(0.18), lineWidth: 1))
+            )
+            .padding(.top, 6)
         }
     }
 
@@ -1064,23 +1145,12 @@ struct AskView: View {
         }
     }
 
-    @ViewBuilder private var background: some View {
-        ZStack {
-            baseBackground
-            // The thinking visual (behind content, clipped to the panel) depends on the
-            // chosen style — top wash / radial aurora / or none (dots & status are inline).
-            if vm.isLoading {
-                thinkingBackground
-                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                    .transition(.opacity)
-            }
-        }
-    }
-
     @ViewBuilder private var thinkingBackground: some View {
+        let sp = Settings.shared.thinkingSpeed
+        let it = Settings.shared.thinkingIntensity
         switch ThinkingStyle(rawValue: Settings.shared.thinkingStyle) ?? .topWash {
-        case .topWash:      ThinkingWash()
-        case .radialAurora: RadialAurora()
+        case .topWash:      ThinkingWash(speed: sp, intensity: it)
+        case .radialAurora: RadialAurora(speed: sp, intensity: it)
         default:            EmptyView()
         }
     }

@@ -56,6 +56,9 @@ final class SettingsModel: ObservableObject {
     @Published var layoutName: String { didSet { commit() } }
     @Published var iconStyle: String { didSet { commit() } }
     @Published var thinkingStyle: String { didSet { commit() } }
+    @Published var thinkingSpeed: Double { didSet { commit() } }
+    @Published var thinkingIntensity: Double { didSet { commit() } }
+    @Published var appearanceMode: String { didSet { commit() } }
     @Published var serverManagedSessions: Bool { didSet { commit() } }
     @Published var directHost: String { didSet { commit() } }
     @Published var savingModel: String { didSet { commit() } }
@@ -77,6 +80,9 @@ final class SettingsModel: ObservableObject {
         layoutName = s.layoutName
         iconStyle = s.iconStyle
         thinkingStyle = s.thinkingStyle
+        thinkingSpeed = s.thinkingSpeed
+        thinkingIntensity = s.thinkingIntensity
+        appearanceMode = s.appearanceMode
         serverManagedSessions = s.serverManagedSessions
         directHost = s.directHost
         savingModel = s.savingModel
@@ -99,6 +105,9 @@ final class SettingsModel: ObservableObject {
         s.layoutName = layoutName
         s.iconStyle = iconStyle
         s.thinkingStyle = thinkingStyle
+        s.thinkingSpeed = thinkingSpeed
+        s.thinkingIntensity = thinkingIntensity
+        s.appearanceMode = appearanceMode
         s.serverManagedSessions = serverManagedSessions
         s.directHost = directHost
         s.savingModel = savingModel
@@ -195,6 +204,14 @@ struct SettingsView: View {
                         }
                         .labelsHidden().pickerStyle(.segmented).frame(width: 180)
                     }
+                    row(ar ? "المظهر" : "Appearance") {
+                        Picker("", selection: $model.appearanceMode) {
+                            Text(ar ? "حسب النظام" : "System").tag("system")
+                            Text(ar ? "مظلم" : "Dark").tag("dark")
+                            Text(ar ? "مضيء" : "Light").tag("light")
+                        }
+                        .labelsHidden().pickerStyle(.segmented).frame(width: 220)
+                    }
                 }
 
                 // Appearance — theme, layout, templates, and the theme customizer.
@@ -224,6 +241,20 @@ struct SettingsView: View {
                             }
                         }
                         .labelsHidden().frame(width: 220)
+                    }
+                    VStack(alignment: .leading, spacing: 8) {
+                        row(ar ? "سرعة الأضواء" : "Light speed") {
+                            HStack(spacing: 8) {
+                                Slider(value: $model.thinkingSpeed, in: 0.3...2.0).frame(width: 170)
+                                Text(String(format: "%.1f×", model.thinkingSpeed)).font(.system(size: 11, design: .monospaced)).frame(width: 40)
+                            }
+                        }
+                        row(ar ? "شدّة الأضواء" : "Light intensity") {
+                            HStack(spacing: 8) {
+                                Slider(value: $model.thinkingIntensity, in: 0.1...1.0).frame(width: 170)
+                                Text(String(format: "%.0f%%", model.thinkingIntensity * 100)).font(.system(size: 11, design: .monospaced)).frame(width: 40)
+                            }
+                        }
                     }
                     row(ar ? "صورة مخصّصة" : "Custom image") { customImageControls }
 
@@ -305,6 +336,7 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .frame(width: 500, height: 760)
+        .preferredColorScheme(model.appearanceMode == "dark" ? .dark : (model.appearanceMode == "light" ? .light : nil))
         .environment(\.layoutDirection, ar ? .rightToLeft : .leftToRight)
     }
 
@@ -512,6 +544,7 @@ struct SettingsView: View {
         case .chat:    return ar ? "محادثة" : "Chat"
         case .rail:    return ar ? "شريط جانبي" : "Rail"
         case .minimal: return ar ? "تركيز" : "Minimal"
+        case .aurora:  return ar ? "لوحة الشفق" : "Aurora Canvas"
         }
     }
 
