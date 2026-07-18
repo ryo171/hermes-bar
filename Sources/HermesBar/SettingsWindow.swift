@@ -545,6 +545,8 @@ struct SettingsView: View {
         case .rail:    return ar ? "شريط جانبي" : "Rail"
         case .minimal: return ar ? "تركيز" : "Minimal"
         case .aurora:  return ar ? "لوحة الشفق" : "Aurora Canvas"
+        case .commandDeck: return ar ? "لوحة القيادة" : "Command Deck"
+        case .palette: return ar ? "لوحة الأوامر" : "Command Palette"
         }
     }
 

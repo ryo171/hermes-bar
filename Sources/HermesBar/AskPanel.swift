@@ -8,7 +8,7 @@ import MarkdownUI
 enum PinMode: String { case off, here, everywhere }
 
 enum PanelLayout: String, CaseIterable {
-    case classic, chat, rail, minimal, aurora
+    case classic, chat, rail, minimal, aurora, commandDeck, palette
     var label: String {
         switch self {
         case .classic: return "Classic"
@@ -16,6 +16,8 @@ enum PanelLayout: String, CaseIterable {
         case .rail:    return "Rail"
         case .minimal: return "Minimal"
         case .aurora:  return "Aurora Canvas"
+        case .commandDeck: return "Command Deck"
+        case .palette: return "Command Palette"
         }
     }
 }
@@ -1054,7 +1056,189 @@ struct AskView: View {
         case .rail:    railLayout
         case .minimal: minimalLayout
         case .aurora:  auroraLayout
+        case .commandDeck: commandDeckLayout
+        case .palette: paletteLayout
         }
+    }
+
+    // Command Palette — faithful to the Raycast-style reference: a search-style input
+    // at the TOP, a row of quick filter chips, the results/thread, and a bottom hint
+    // bar with keycaps. A totally different shape from the chat layouts.
+    private var paletteLayout: some View {
+        VStack(spacing: 10) {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "magnifyingglass").foregroundColor(t.textSecondary).font(.system(size: 15)).padding(.top, 3)
+                ZStack(alignment: .topLeading) {
+                    if vm.input.isEmpty {
+                        Text(ar ? "اكتب أمراً أو سؤالاً…" : "Search or type a command…")
+                            .foregroundColor(t.textSecondary).font(.system(size: 16)).padding(.top, 2).allowsHitTesting(false)
+                    }
+                    MultilineInput(text: $vm.input, textColor: NSColor(t.textPrimary), onSend: { vm.send() })
+                        .frame(minHeight: 22, maxHeight: 80)
+                }
+                sendOrStop
+            }
+            if let q = vm.queued, !q.isEmpty { queuedBanner(q) }
+            Divider().opacity(0.15)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) { paletteChips }
+            }
+            if !vm.attachments.isEmpty { attachmentsRow }
+
+            contentArea
+
+            Divider().opacity(0.15)
+            HStack(spacing: 14) {
+                keycapHint("return", ar ? "إرسال" : "Send")
+                keycapHint("arrow.up", ar ? "سطر جديد ⇧" : "New line ⇧")
+                keycapHint("escape", ar ? "إغلاق" : "Close")
+                Spacer()
+                modelPicker
+            }
+        }
+    }
+
+    // Labelled filter chips (Raycast-style) mapping to our key modes/tools.
+    @ViewBuilder private var paletteChips: some View {
+        paletteChip(vm.savingMode ? "leaf.fill" : "brain", vm.savingMode ? (ar ? "توفير" : "Saving") : (ar ? "عميق" : "Deep"), vm.savingMode) { vm.toggleSaving() }
+        if vm.savingMode {
+            paletteChip("globe", ar ? "بحث" : "Web", vm.webSearch) { vm.toggleWebSearch() }
+        }
+        paletteChip(vm.withScreenshot ? "eye.fill" : "eye.slash", ar ? "الشاشة" : "Screen", vm.withScreenshot) { vm.setWithScreenshot(!vm.withScreenshot) }
+        paletteChip("paperclip", ar ? "إرفاق" : "Attach", false) { openFilePicker() }
+        paletteChip("checklist", ar ? "مهمة" : "Task", false) { vm.applyTaskPrefix() }
+        paletteChip("calendar.badge.clock", ar ? "جدولة" : "Schedule", false) { vm.applySchedulePrefix() }
+        paletteChip("square.and.pencil", ar ? "جديد" : "New", false) { vm.newChat() }
+    }
+
+    private func paletteChip(_ icon: String, _ label: String, _ active: Bool, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: icon).font(.system(size: 11))
+                Text(label).font(.system(size: 12))
+            }
+            .foregroundColor(active ? t.accent : t.textSecondary)
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(active ? t.accent.opacity(0.15) : t.surface.opacity(0.5)))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(t.textSecondary.opacity(0.16), lineWidth: 1))
+        }.buttonStyle(SpringPopButtonStyle())
+    }
+
+    private func keycapHint(_ symbol: String, _ label: String) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: symbol).font(.system(size: 10, weight: .medium))
+                .frame(width: 18, height: 16)
+                .background(RoundedRectangle(cornerRadius: 4).fill(t.surface.opacity(0.6)))
+                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(t.textSecondary.opacity(0.2)))
+            Text(label).font(.system(size: 11))
+        }
+        .foregroundColor(t.textSecondary)
+    }
+
+    // Command Deck — a two-pane cockpit: a labelled sidebar (New chat · Tools ·
+    // Model) on one side, the conversation + composer on the other. Structurally the
+    // opposite of the single-column layouts.
+    private var commandDeckLayout: some View {
+        HStack(alignment: .top, spacing: 0) {
+            deckSidebar
+                .frame(width: 178)
+                .frame(maxHeight: .infinity, alignment: .top)
+            Divider().opacity(0.15)
+            VStack(spacing: 8) {
+                contentArea
+                if !vm.attachments.isEmpty { attachmentsRow }
+                deckComposer
+            }
+            .padding(.horizontal, 12)
+        }
+    }
+
+    private var deckSidebar: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: "sparkles").foregroundColor(t.accent).font(.system(size: 14, weight: .semibold))
+                Text("Hermes").font(.system(size: 15, weight: .bold)).foregroundColor(t.textPrimary)
+            }
+            deckButton("square.and.pencil", ar ? "محادثة جديدة" : "New chat") { vm.newChat() }
+                .keyboardShortcut("n", modifiers: .command)
+
+            deckSectionHeader(ar ? "أدوات" : "Tools")
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(deckToolIds, id: \.self) { id in deckToolRow(id) }
+                }
+            }
+            deckSectionHeader(ar ? "المودل" : "Model")
+            HStack { modelPicker; Spacer() }
+        }
+        .frame(maxHeight: .infinity, alignment: .top)
+    }
+
+    // Tools shown in the deck sidebar (respects hidden set; New-chat is its own button).
+    private var deckToolIds: [String] {
+        PanelIcon.all.map { $0.id }.filter { id in
+            guard !iconHidden(id), id != "newchat" else { return false }
+            if id == "web" { return vm.savingMode }
+            return true
+        }
+    }
+
+    private func deckToolActive(_ id: String) -> Bool {
+        switch id {
+        case "mode":   return vm.savingMode
+        case "web":    return vm.webSearch
+        case "screen": return vm.withScreenshot
+        case "pin":    return vm.pinMode != .off
+        case "notify": return vm.notifyWhenDone
+        default:       return false
+        }
+    }
+
+    private func deckToolRow(_ id: String) -> some View {
+        let icon = PanelIcon.all.first { $0.id == id }
+        let active = deckToolActive(id)
+        return Button { triggerIcon(id) } label: {
+            HStack(spacing: 8) {
+                Image(systemName: icon?.symbol ?? "circle").font(.system(size: 12)).frame(width: 18)
+                Text(icon?.title(ar) ?? id).font(.system(size: 12)).lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .foregroundColor(active ? t.accent : t.textSecondary)
+            .padding(.horizontal, 8).padding(.vertical, 6)
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(active ? t.accent.opacity(0.14) : Color.clear))
+        }.buttonStyle(SpringPopButtonStyle())
+    }
+
+    private func deckSectionHeader(_ s: String) -> some View {
+        Text(s.uppercased())
+            .font(.system(size: 10, weight: .bold)).foregroundColor(t.textSecondary.opacity(0.7)).kerning(0.5)
+    }
+
+    private func deckButton(_ icon: String, _ label: String, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: icon).font(.system(size: 12, weight: .medium))
+                Text(label).font(.system(size: 12, weight: .medium))
+                Spacer(minLength: 0)
+            }
+            .foregroundColor(t.textPrimary)
+            .padding(.horizontal, 8).padding(.vertical, 7)
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(t.surface.opacity(0.55)))
+        }.buttonStyle(SpringPopButtonStyle())
+    }
+
+    private var deckComposer: some View {
+        HStack(alignment: .bottom, spacing: 8) {
+            inputField
+            sendOrStop
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 14, style: .continuous)
+            .fill(t.surface.opacity(0.5))
+            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(t.textSecondary.opacity(0.15), lineWidth: 1)))
     }
 
     // Aurora Canvas — a distinct, roomy layout: minimal top bar, an airy answer area
