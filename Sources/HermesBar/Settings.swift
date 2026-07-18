@@ -67,10 +67,17 @@ final class Settings: Codable {
     var apiKey: String = ""     // empty → resolved from ~/.hermes/.env at request time
     var captureFullScreen: Bool = true
 
-    // Non-destructive icon manager: ids of control-row icons the user has HIDDEN.
-    // Nothing is ever deleted — hiding just removes it from the panel; clearing the
-    // set restores it. See PanelIcon.all for the catalog.
+    // Non-destructive icon manager: ids of control-row icons the user moved OFF the
+    // surface. They aren't deleted — they live under the panel's "⋯ More" popover
+    // and can be brought back to the surface anytime. See PanelIcon.all.
     var hiddenIcons: [String] = []
+
+    // User-made themes (color + transparency), editable in Settings.
+    var customThemes: [CustomThemeData] = []
+
+    // Last-fetched provider model ids — cached so the in-panel model picker works
+    // without re-fetching every time.
+    var cachedModels: [String] = []
 
     var theme: Theme { Theme.byName(themeName) }
 
@@ -93,7 +100,7 @@ final class Settings: Codable {
     private enum CodingKeys: String, CodingKey {
         case language, themeName, hotKey, newWindowHotKey, closeHotKey, layoutName, iconStyle, serverManagedSessions
         case directHost, savingModel, savingVisionModel, deepModel, directKey, searchApiKey
-        case host, apiKey, captureFullScreen, hiddenIcons
+        case host, apiKey, captureFullScreen, hiddenIcons, customThemes, cachedModels
     }
 
     init() {}
@@ -122,6 +129,8 @@ final class Settings: Codable {
         apiKey = try c.decodeIfPresent(String.self, forKey: .apiKey) ?? ""
         captureFullScreen = try c.decodeIfPresent(Bool.self, forKey: .captureFullScreen) ?? true
         hiddenIcons = try c.decodeIfPresent([String].self, forKey: .hiddenIcons) ?? []
+        customThemes = try c.decodeIfPresent([CustomThemeData].self, forKey: .customThemes) ?? []
+        cachedModels = try c.decodeIfPresent([String].self, forKey: .cachedModels) ?? []
     }
 
     static func load() -> Settings {

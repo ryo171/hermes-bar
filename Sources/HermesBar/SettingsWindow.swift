@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 final class SettingsWindowController: NSWindowController {
     convenience init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 440, height: 640),
+            contentRect: NSRect(x: 0, y: 0, width: 500, height: 760),
             styleMask: [.titled, .closable],
             backing: .buffered, defer: false)
         window.title = "Hermes Bar"
@@ -63,6 +63,7 @@ final class SettingsModel: ObservableObject {
     @Published var directKey: String { didSet { commit() } }
     @Published var searchApiKey: String { didSet { commit() } }
     @Published var hiddenIcons: [String] { didSet { commit() } }
+    @Published var customThemes: [CustomThemeData] { didSet { commit() } }
 
     init() {
         let s = Settings.shared
@@ -82,6 +83,7 @@ final class SettingsModel: ObservableObject {
         directKey = s.directKey
         searchApiKey = s.searchApiKey
         hiddenIcons = s.hiddenIcons
+        customThemes = s.customThemes
     }
 
     private func commit() {
@@ -102,6 +104,7 @@ final class SettingsModel: ObservableObject {
         s.directKey = directKey
         s.searchApiKey = searchApiKey
         s.hiddenIcons = hiddenIcons
+        s.customThemes = customThemes
         s.save()
     }
 }
@@ -113,6 +116,7 @@ struct SettingsView: View {
     @State private var iconPreview: NSImage? = HermesIcon.loadCustomPreview()
     @State private var modelList: [String] = []
     @State private var fetchingModels = false
+    @State private var draft = CustomThemeData()   // theme being designed
 
     private var ar: Bool { model.language == .arabic }
 
@@ -121,6 +125,9 @@ struct SettingsView: View {
         HermesClient.shared.fetchModels(host: model.directHost, apiKey: Settings.shared.resolvedDirectKey()) { ids in
             modelList = ids
             fetchingModels = false
+            // Cache for the in-panel model picker.
+            Settings.shared.cachedModels = ids
+            Settings.shared.save()
         }
     }
 
@@ -169,223 +176,294 @@ struct SettingsView: View {
 
     var body: some View {
         ScrollView {
-        VStack(alignment: .leading, spacing: 18) {
-            Text(ar ? "إعدادات Hermes Bar" : "Hermes Bar Settings")
-                .font(.system(size: 18, weight: .bold))
-
-            // Language
-            row(ar ? "اللغة" : "Language") {
-                Picker("", selection: $model.language) {
-                    Text("العربية").tag(AppLanguage.arabic)
-                    Text("English").tag(AppLanguage.english)
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(spacing: 8) {
+                    Image(systemName: "sparkles").foregroundColor(.accentColor).font(.system(size: 18, weight: .semibold))
+                    Text(ar ? "إعدادات Hermes Bar" : "Hermes Bar Settings")
+                        .font(.system(size: 20, weight: .bold))
                 }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .frame(width: 180)
-            }
 
-            // Theme
-            row(ar ? "الثيم" : "Theme") {
-                Picker("", selection: $model.themeName) {
-                    ForEach(Theme.all) { theme in
-                        Text(theme.label).tag(theme.name)
+                // General
+                card(ar ? "عام" : "General") {
+                    row(ar ? "اللغة" : "Language") {
+                        Picker("", selection: $model.language) {
+                            Text("العربية").tag(AppLanguage.arabic)
+                            Text("English").tag(AppLanguage.english)
+                        }
+                        .labelsHidden().pickerStyle(.segmented).frame(width: 180)
                     }
                 }
-                .labelsHidden()
-                .frame(width: 200)
-            }
 
-            // Layout
-            row(ar ? "التخطيط" : "Layout") {
-                Picker("", selection: $model.layoutName) {
-                    ForEach(PanelLayout.allCases, id: \.rawValue) { l in
-                        Text(layoutLabel(l)).tag(l.rawValue)
+                // Appearance — theme, layout, templates, and the theme customizer.
+                card(ar ? "المظهر" : "Appearance") {
+                    row(ar ? "الثيم" : "Theme") {
+                        Picker("", selection: $model.themeName) {
+                            ForEach(Theme.selectable) { theme in Text(theme.label).tag(theme.name) }
+                        }
+                        .labelsHidden().frame(width: 220)
+                    }
+                    row(ar ? "التخطيط" : "Layout") {
+                        Picker("", selection: $model.layoutName) {
+                            ForEach(PanelLayout.allCases, id: \.rawValue) { l in Text(layoutLabel(l)).tag(l.rawValue) }
+                        }
+                        .labelsHidden().frame(width: 220)
+                    }
+                    row(ar ? "الأيقونة" : "Menu-bar icon") {
+                        Picker("", selection: $model.iconStyle) {
+                            ForEach(IconStyle.allCases, id: \.rawValue) { i in Text(iconLabel(i)).tag(i.rawValue) }
+                        }
+                        .labelsHidden().frame(width: 220).disabled(hasCustomIcon)
+                    }
+                    row(ar ? "صورة مخصّصة" : "Custom image") { customImageControls }
+
+                    Divider().opacity(0.4)
+                    templatesSection
+                    Divider().opacity(0.4)
+                    themeCustomizer
+                }
+
+                // Shortcuts
+                card(ar ? "الاختصارات" : "Shortcuts") {
+                    hotkeyRow(ar ? "إظهار/إخفاء" : "Show/Hide", model.hotKey.displayString) { model.hotKey = $0 }
+                    hotkeyRow(ar ? "محادثة جديدة" : "New conversation", model.newWindowHotKey.displayString) { model.newWindowHotKey = $0 }
+                    hotkeyRow(ar ? "إغلاق المحادثة" : "Close conversation", model.closeHotKey.displayString,
+                              help: ar ? "يغلق النافذة المحدّدة نهائياً" : "Destroys the focused window for good") { model.closeHotKey = $0 }
+                }
+
+                // Connection
+                card(ar ? "الاتصال" : "Connection") {
+                    row(ar ? "عنوان هيرميس" : "Hermes host") {
+                        TextField("http://localhost:8642", text: $model.host).textFieldStyle(.roundedBorder).frame(width: 220)
+                    }
+                    row(ar ? "جلسات مشتركة" : "Shared sessions") {
+                        Toggle("", isOn: $model.serverManagedSessions).labelsHidden().toggleStyle(.switch)
+                            .help(ar ? "يخلي محادثات النافذة جلسات هيرميس حقيقية تكمّلها في الديسكتوب."
+                                     : "Make panel chats real Hermes sessions you can continue in Desktop.")
                     }
                 }
-                .labelsHidden()
-                .frame(width: 200)
-            }
 
-            // Menu-bar icon
-            row(ar ? "الأيقونة" : "Icon") {
-                Picker("", selection: $model.iconStyle) {
-                    ForEach(IconStyle.allCases, id: \.rawValue) { i in
-                        Text(iconLabel(i)).tag(i.rawValue)
+                // Provider & Models
+                card(ar ? "المزوّد والموديلات" : "Provider & Models") {
+                    row(ar ? "مزوّد التوفير" : "Direct provider") {
+                        TextField("https://opencode.ai/zen/go/v1", text: $model.directHost)
+                            .textFieldStyle(.roundedBorder).frame(width: 220)
+                    }
+                    row(ar ? "مفتاح المزوّد" : "Provider key") {
+                        SecureField(ar ? "فاضي = من ~/.hermes/.env" : "empty = ~/.hermes/.env", text: $model.directKey)
+                            .textFieldStyle(.roundedBorder).frame(width: 220)
+                    }
+                    row(ar ? "الموديلات" : "Models") {
+                        Button(fetchingModels ? (ar ? "يجلب…" : "Fetching…") : (ar ? "اجلب الموديلات" : "Fetch models")) { fetchModels() }
+                            .disabled(fetchingModels)
+                        if !modelList.isEmpty {
+                            Text(ar ? "\(modelList.count) موديل" : "\(modelList.count) models").font(.system(size: 11)).foregroundColor(.secondary)
+                        }
+                    }
+                    row(ar ? "موديل التوفير (نصّي)" : "Saving model (text)") { modelField($model.savingModel, placeholder: "deepseek-v4-flash") }
+                    row(ar ? "موديل الرؤية" : "Vision model") {
+                        modelField($model.savingVisionModel, placeholder: ar ? "فاضي = نفس النصّي" : "empty = same as text")
+                    }
+                    row(ar ? "موديل العميق" : "Deep model") {
+                        TextField(ar ? "فاضي = افتراضي هيرميس" : "empty = Hermes default", text: $model.deepModel).textFieldStyle(.roundedBorder).frame(width: 220)
+                    }
+                    row(ar ? "مفتاح البحث (Tavily)" : "Search key (Tavily)") {
+                        SecureField(ar ? "فاضي = بحث معطّل" : "empty = no search", text: $model.searchApiKey).textFieldStyle(.roundedBorder).frame(width: 220)
                     }
                 }
-                .labelsHidden()
-                .frame(width: 200)
-                .disabled(hasCustomIcon)
-            }
 
-            // Custom icon image (overrides the styles above)
-            row(ar ? "صورة مخصّصة" : "Custom image") {
-                HStack(spacing: 10) {
-                    if let p = iconPreview {
-                        previewChip(p, bg: .white, tint: .black)
-                        previewChip(p, bg: Color(white: 0.16), tint: .white)
-                    }
-                    Button(ar ? "اختر صورة…" : "Choose…") { chooseCustomIcon() }
-                    if hasCustomIcon {
-                        Button(ar ? "إزالة" : "Remove") {
-                            HermesIcon.removeCustomImage()
-                            hasCustomIcon = false
-                            iconPreview = nil
-                            NotificationCenter.default.post(name: Settings.didChangeNotification, object: nil)
+                // Panel icons — choose what stays on the surface; the rest go to "⋯ More".
+                card(ar ? "أيقونات اللوحة" : "Panel icons") {
+                    Text(ar ? "اختر اللي يظهر على الواجهة — المطفأة تنطوي تحت «⋯ المزيد» (ما يُحذف شيء)."
+                            : "Choose what shows on the surface — the rest tuck under \"⋯ More\" (nothing is deleted).")
+                        .font(.system(size: 11)).foregroundColor(.secondary)
+                    ForEach(PanelIcon.all) { icon in
+                        HStack(spacing: 10) {
+                            Image(systemName: icon.symbol).font(.system(size: 13)).frame(width: 22).foregroundColor(.secondary)
+                            Text(icon.title(ar)).font(.system(size: 13))
+                            Spacer()
+                            Toggle("", isOn: iconVisibilityBinding(icon.id)).labelsHidden().toggleStyle(.switch)
                         }
                     }
                 }
-            }
 
-            // Hotkey recorder — show/hide
-            row(ar ? "إظهار/إخفاء" : "Show/Hide") {
-                HStack(spacing: 10) {
-                    Text(model.hotKey.displayString)
-                        .font(.system(size: 15, weight: .semibold, design: .rounded))
-                        .padding(.horizontal, 12).padding(.vertical, 6)
-                        .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.15)))
-
-                    Button(recorder.isRecording
-                           ? (ar ? "اضغط أي مفتاح…" : "Press keys…")
-                           : (ar ? "تسجيل" : "Record")) {
-                        recorder.onCapture = { combo in model.hotKey = combo }
-                        recorder.start()
-                    }
-                    .disabled(recorder.isRecording)
-                }
+                Text(ar ? "التغييرات تُحفظ تلقائياً. تأكد أن هيرميس شغّال: hermes gateway"
+                        : "Changes save automatically. Make sure Hermes is running: hermes gateway")
+                    .font(.system(size: 11)).foregroundColor(.secondary)
             }
-
-            // New-conversation hotkey recorder
-            row(ar ? "محادثة جديدة" : "New conversation") {
-                HStack(spacing: 10) {
-                    Text(model.newWindowHotKey.displayString)
-                        .font(.system(size: 15, weight: .semibold, design: .rounded))
-                        .padding(.horizontal, 12).padding(.vertical, 6)
-                        .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.15)))
-
-                    Button(recorder.isRecording
-                           ? (ar ? "اضغط أي مفتاح…" : "Press keys…")
-                           : (ar ? "تسجيل" : "Record")) {
-                        recorder.onCapture = { combo in model.newWindowHotKey = combo }
-                        recorder.start()
-                    }
-                    .disabled(recorder.isRecording)
-                }
-            }
-
-            // Close-conversation hotkey
-            row(ar ? "إغلاق المحادثة" : "Close conversation") {
-                HStack(spacing: 10) {
-                    Text(model.closeHotKey.displayString)
-                        .font(.system(size: 15, weight: .semibold, design: .rounded))
-                        .padding(.horizontal, 12).padding(.vertical, 6)
-                        .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.15)))
-
-                    Button(recorder.isRecording
-                           ? (ar ? "اضغط أي مفتاح…" : "Press keys…")
-                           : (ar ? "تسجيل" : "Record")) {
-                        recorder.onCapture = { combo in model.closeHotKey = combo }
-                        recorder.start()
-                    }
-                    .disabled(recorder.isRecording)
-                    .help(ar ? "ينهي المحادثة ويخفي النافذة — الاستدعاء الجاي يطلع فاضي" : "Ends the chat and hides — next summon is empty")
-                }
-            }
-
-            // Host
-            row(ar ? "عنوان هيرميس" : "Hermes host") {
-                TextField("http://localhost:8642", text: $model.host)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 220)
-            }
-
-            // Server-managed sessions (X-Hermes-Session-Id)
-            row(ar ? "جلسات مشتركة" : "Shared sessions") {
-                Toggle("", isOn: $model.serverManagedSessions)
-                    .labelsHidden()
-                    .help(ar ? "يخلي محادثات النافذة جلسات هيرميس حقيقية تكمّلها في الديسكتوب. أطفئه لخوادم OpenAI العامة."
-                             : "Make panel chats real Hermes sessions you can continue in Desktop. Turn off for generic OpenAI hosts.")
-            }
-
-            Divider()
-
-            // Saving-mode direct provider (default OpenCode Go; editable)
-            row(ar ? "مزوّد التوفير" : "Direct provider") {
-                TextField("https://opencode.ai/zen/go/v1", text: $model.directHost)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 220)
-                    .help(ar ? "رابط المزوّد المتوافق مع OpenAI لوضع التوفير. غيّره للرجوع لـOpenRouter."
-                             : "OpenAI-compatible base URL for Saving mode. Change it to switch back to OpenRouter.")
-            }
-            row(ar ? "مفتاح المزوّد" : "Provider key") {
-                SecureField(ar ? "فاضي = من ~/.hermes/.env" : "empty = read from ~/.hermes/.env", text: $model.directKey)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 220)
-            }
-            row(ar ? "الموديلات" : "Models") {
-                Button(fetchingModels ? (ar ? "يجلب…" : "Fetching…") : (ar ? "اجلب الموديلات" : "Fetch models")) {
-                    fetchModels()
-                }
-                .disabled(fetchingModels)
-                if !modelList.isEmpty {
-                    Text(ar ? "\(modelList.count) موديل" : "\(modelList.count) models")
-                        .font(.system(size: 11)).foregroundColor(.secondary)
-                }
-            }
-            row(ar ? "موديل التوفير (نصّي)" : "Saving model (text)") {
-                modelField($model.savingModel, placeholder: "deepseek-v4-flash")
-            }
-            row(ar ? "موديل الرؤية" : "Vision model") {
-                modelField($model.savingVisionModel, placeholder: ar ? "للصور — فاضي = نفس النصّي" : "for images — empty = same as text")
-            }
-            row(ar ? "موديل العميق" : "Deep model") {
-                TextField(ar ? "اتركه فاضي = افتراضي هيرميس" : "empty = Hermes default", text: $model.deepModel)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 220)
-            }
-            row(ar ? "مفتاح البحث (Tavily)" : "Search key (Tavily)") {
-                SecureField(ar ? "فاضي = بحث معطّل في وضع التوفير" : "empty = no search in Saving mode", text: $model.searchApiKey)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 220)
-                    .help(ar ? "مفتاح Tavily المجاني — يفعّل زر 🌐 مع أي مزوّد (حتى OpenCode Go)."
-                             : "Free Tavily key — enables the 🌐 button with any provider (even OpenCode Go).")
-            }
-
-            Divider()
-
-            // Icon manager — hide/show panel icons (non-destructive; toggle back on anytime).
-            Text(ar ? "أيقونات اللوحة" : "Panel icons")
-                .font(.system(size: 15, weight: .semibold))
-            Text(ar ? "أخفِ أي أيقونة لا تحتاجها — تقدر ترجّعها بأي وقت (ما يُحذف شيء)."
-                    : "Hide any icon you don't need — restore it anytime (nothing is deleted).")
-                .font(.system(size: 11)).foregroundColor(.secondary)
-            VStack(spacing: 6) {
-                ForEach(PanelIcon.all) { icon in
-                    HStack(spacing: 10) {
-                        Image(systemName: icon.symbol)
-                            .font(.system(size: 13))
-                            .frame(width: 22)
-                            .foregroundColor(.secondary)
-                        Text(icon.title(ar)).font(.system(size: 13))
-                        Spacer()
-                        Toggle("", isOn: iconVisibilityBinding(icon.id)).labelsHidden()
-                    }
-                }
-            }
-
-            Divider()
-
-            Text(ar
-                 ? "التغييرات تُحفظ تلقائياً. تأكد أن هيرميس شغّال: hermes gateway"
-                 : "Changes save automatically. Make sure Hermes is running: hermes gateway")
-                .font(.system(size: 12))
-                .foregroundColor(.secondary)
+            .padding(20)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .padding(24)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        }
-        .frame(width: 440, height: 640)
+        .frame(width: 500, height: 760)
         .environment(\.layoutDirection, ar ? .rightToLeft : .leftToRight)
+    }
+
+    // MARK: - Section card + shared rows
+
+    @ViewBuilder private func card<C: View>(_ title: String, @ViewBuilder _ content: () -> C) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title.uppercased())
+                .font(.system(size: 11, weight: .bold)).foregroundColor(.secondary).kerning(0.5)
+            content()
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.primary.opacity(0.045)))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
+    }
+
+    @ViewBuilder private func hotkeyRow(_ title: String, _ display: String, help: String? = nil,
+                                        _ set: @escaping (HotKeyCombo) -> Void) -> some View {
+        row(title) {
+            HStack(spacing: 10) {
+                Text(display)
+                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.15)))
+                Button(recorder.isRecording ? (ar ? "اضغط أي مفتاح…" : "Press keys…") : (ar ? "تسجيل" : "Record")) {
+                    recorder.onCapture = set
+                    recorder.start()
+                }
+                .disabled(recorder.isRecording)
+                .help(help ?? "")
+            }
+        }
+    }
+
+    private var customImageControls: some View {
+        HStack(spacing: 10) {
+            if let p = iconPreview {
+                previewChip(p, bg: .white, tint: .black)
+                previewChip(p, bg: Color(white: 0.16), tint: .white)
+            }
+            Button(ar ? "اختر صورة…" : "Choose…") { chooseCustomIcon() }
+            if hasCustomIcon {
+                Button(ar ? "إزالة" : "Remove") {
+                    HermesIcon.removeCustomImage()
+                    hasCustomIcon = false
+                    iconPreview = nil
+                    NotificationCenter.default.post(name: Settings.didChangeNotification, object: nil)
+                }
+            }
+        }
+    }
+
+    // MARK: - Templates (pick a base look, then tweak)
+
+    private var templatesSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(ar ? "قوالب جاهزة" : "Templates").font(.system(size: 12, weight: .semibold))
+            Text(ar ? "اختر قالباً كبداية ثم عدّل عليه بحرية." : "Pick a starting look, then tweak freely.")
+                .font(.system(size: 11)).foregroundColor(.secondary)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    ForEach(DesignTemplate.all) { tpl in
+                        Button { applyTemplate(tpl) } label: { templateChip(tpl) }.buttonStyle(.plain)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+        }
+    }
+
+    private func templateChip(_ tpl: DesignTemplate) -> some View {
+        let selected = model.themeName == tpl.themeName && model.layoutName == tpl.layout
+        return VStack(spacing: 6) {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(tpl.swatch)
+                .frame(width: 84, height: 48)
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(tpl.accent, lineWidth: 2).opacity(0.9))
+                .overlay(alignment: .bottomLeading) {
+                    Circle().fill(tpl.accent).frame(width: 12, height: 12).padding(6)
+                }
+            Text(tpl.title(ar)).font(.system(size: 11)).lineLimit(1)
+        }
+        .padding(6)
+        .background(RoundedRectangle(cornerRadius: 10).fill(selected ? Color.accentColor.opacity(0.18) : Color.clear))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(selected ? Color.accentColor : Color.clear, lineWidth: 1.5))
+    }
+
+    private func applyTemplate(_ tpl: DesignTemplate) {
+        model.themeName = tpl.themeName
+        model.layoutName = tpl.layout
+        model.hiddenIcons = tpl.hidden
+    }
+
+    // MARK: - Theme customizer (colours + transparency → save as a theme)
+
+    private var themeCustomizer: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(ar ? "صمّم ثيمك" : "Design a theme").font(.system(size: 12, weight: .semibold))
+            HStack(spacing: 10) {
+                TextField(ar ? "اسم الثيم" : "Theme name", text: $draft.label).textFieldStyle(.roundedBorder).frame(width: 150)
+            }
+            HStack(spacing: 18) {
+                colorField(ar ? "الخلفية" : "Background", r: $draft.bgR, g: $draft.bgG, b: $draft.bgB)
+                colorField(ar ? "التمييز" : "Accent", r: $draft.accentR, g: $draft.accentG, b: $draft.accentB)
+            }
+            Toggle(ar ? "زجاجي (شفاف)" : "Glass (translucent)", isOn: $draft.glass).toggleStyle(.switch)
+            if draft.glass {
+                HStack(spacing: 8) {
+                    Text(ar ? "الشفافية" : "Transparency").font(.system(size: 11)).frame(width: 70, alignment: .leading)
+                    Slider(value: $draft.opacity, in: 0.0...0.85)
+                    Text(String(format: "%.0f%%", (1 - draft.opacity) * 100)).font(.system(size: 11, design: .monospaced)).frame(width: 42)
+                }
+            }
+            HStack {
+                Button(ar ? "احفظ كثيم جديد" : "Save as theme") { saveDraftTheme() }
+                    .buttonStyle(.borderedProminent)
+                Spacer()
+            }
+            if !model.customThemes.isEmpty {
+                Divider().opacity(0.4)
+                Text(ar ? "ثيماتي" : "My themes").font(.system(size: 11)).foregroundColor(.secondary)
+                ForEach(model.customThemes) { ct in
+                    HStack(spacing: 8) {
+                        Circle().fill(ct.backgroundColor).frame(width: 14, height: 14)
+                            .overlay(Circle().strokeBorder(Color.secondary.opacity(0.35)))
+                        Circle().fill(ct.accentColor).frame(width: 14, height: 14)
+                        Text(ct.label).font(.system(size: 12)).lineLimit(1)
+                        Spacer()
+                        Button(ar ? "استخدم" : "Apply") { model.themeName = ct.themeName }
+                            .font(.system(size: 11))
+                        Button { deleteTheme(ct) } label: { Image(systemName: "trash").foregroundColor(.red) }
+                            .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+    }
+
+    private func colorField(_ label: String, r: Binding<Double>, g: Binding<Double>, b: Binding<Double>) -> some View {
+        HStack(spacing: 6) {
+            ColorPicker("", selection: colorBinding(r: r, g: g, b: b), supportsOpacity: false).labelsHidden()
+            Text(label).font(.system(size: 11))
+        }
+    }
+
+    private func colorBinding(r: Binding<Double>, g: Binding<Double>, b: Binding<Double>) -> Binding<Color> {
+        Binding(
+            get: { Color(red: r.wrappedValue, green: g.wrappedValue, blue: b.wrappedValue) },
+            set: { newColor in
+                let ns = NSColor(newColor).usingColorSpace(.sRGB) ?? NSColor(newColor)
+                r.wrappedValue = Double(ns.redComponent)
+                g.wrappedValue = Double(ns.greenComponent)
+                b.wrappedValue = Double(ns.blueComponent)
+            }
+        )
+    }
+
+    private func saveDraftTheme() {
+        var t = draft
+        t.id = UUID()
+        if t.label.trimmingCharacters(in: .whitespaces).isEmpty { t.label = ar ? "ثيم مخصّص" : "Custom Theme" }
+        model.customThemes.append(t)
+        model.themeName = t.themeName            // apply the new theme immediately
+        draft = CustomThemeData()                // reset the designer
+    }
+
+    private func deleteTheme(_ ct: CustomThemeData) {
+        model.customThemes.removeAll { $0.id == ct.id }
+        if model.themeName == ct.themeName { model.themeName = Theme.defaultTheme.name }
     }
 
     private func previewChip(_ img: NSImage, bg: Color, tint: Color) -> some View {
@@ -446,4 +524,35 @@ struct SettingsView: View {
             Spacer()
         }
     }
+}
+
+// A one-tap starting look: theme + layout + which icons stay on the surface.
+struct DesignTemplate: Identifiable {
+    let id: String
+    let labelAr: String
+    let labelEn: String
+    let themeName: String
+    let layout: String
+    let hidden: [String]
+    let swatch: Color
+    let accent: Color
+    func title(_ ar: Bool) -> String { ar ? labelAr : labelEn }
+
+    static let all: [DesignTemplate] = [
+        DesignTemplate(id: "graphite", labelAr: "جرافيت", labelEn: "Graphite",
+                       themeName: "hb-graphite", layout: "chat", hidden: ["scrape", "spawn", "desktop"],
+                       swatch: Color(red: 0.09, green: 0.09, blue: 0.11), accent: Color(red: 0.56, green: 0.64, blue: 1.0)),
+        DesignTemplate(id: "glass", labelAr: "زجاجي", labelEn: "Glass",
+                       themeName: "glass", layout: "classic", hidden: [],
+                       swatch: Color(red: 0.16, green: 0.16, blue: 0.18), accent: Color(red: 0.42, green: 0.66, blue: 1.0)),
+        DesignTemplate(id: "midnight", labelAr: "منتصف الليل", labelEn: "Midnight",
+                       themeName: "midnight", layout: "rail", hidden: ["scrape", "notify"],
+                       swatch: Color(red: 0.06, green: 0.07, blue: 0.15), accent: Color(red: 0.49, green: 0.55, blue: 1.0)),
+        DesignTemplate(id: "mono", labelAr: "تركيز", labelEn: "Focus",
+                       themeName: "mono", layout: "minimal", hidden: ["web", "scrape", "pin", "notify", "spawn", "desktop"],
+                       swatch: Color(red: 0.04, green: 0.04, blue: 0.04), accent: Color(white: 0.88)),
+        DesignTemplate(id: "coral", labelAr: "مرجاني", labelEn: "Coral",
+                       themeName: "hb-coral", layout: "chat", hidden: ["scrape", "desktop"],
+                       swatch: Color(red: 0.14, green: 0.06, blue: 0.08), accent: Color(red: 0.94, green: 0.52, blue: 0.37)),
+    ]
 }

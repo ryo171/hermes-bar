@@ -308,6 +308,7 @@ final class AskViewModel: ObservableObject {
     @Published var messages: [ChatMessage] = []
     @Published var errorText: String = ""
     @Published var isLoading: Bool = false
+    @Published var queued: String?   // text typed while a turn is running; auto-sent on finish
     @Published var streamingMessageId: UUID?   // the message currently being streamed (rendered as plain text)
     @Published var elapsed: TimeInterval = 0
     @Published var pinMode: PinMode = PinMode(rawValue: UserDefaults.standard.string(forKey: "hb.pinmode") ?? "off") ?? .off
@@ -465,7 +466,15 @@ final class AskViewModel: ObservableObject {
 
     func send() {
         let q0 = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard (!q0.isEmpty || !attachments.isEmpty), !isLoading else { return }
+        guard (!q0.isEmpty || !attachments.isEmpty) else { return }
+        // Hermes is busy → queue this message instead of interrupting; it fires
+        // automatically as a new turn the moment the current one finishes.
+        if isLoading {
+            guard !q0.isEmpty else { return }
+            queued = (queued.map { $0 + "\n" } ?? "") + q0
+            input = ""
+            return
+        }
         errorText = ""
         isLoading = true
         startTimer()
@@ -668,6 +677,12 @@ final class AskViewModel: ObservableObject {
                 body: summary.isEmpty ? (isArabic ? "تمّت المهمة" : "Task done") : summary
             )
             onTaskFinishedNotify?()
+        }
+        // A message was queued while this turn ran → send it now as a new turn.
+        if let q = queued, !q.isEmpty {
+            queued = nil
+            input = q
+            send()
         }
     }
 
@@ -986,68 +1001,118 @@ struct AskView: View {
     }
 
     private var inputField: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "sparkles").foregroundColor(t.accent).font(.system(size: 16, weight: .semibold)).padding(.top, 3)
-            ZStack(alignment: .topLeading) {
-                if vm.input.isEmpty {
-                    Text(placeholder).foregroundColor(t.textSecondary).font(.system(size: 16)).padding(.top, 2).allowsHitTesting(false)
+        VStack(alignment: .leading, spacing: 4) {
+            if let q = vm.queued, !q.isEmpty { queuedBanner(q) }
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "sparkles").foregroundColor(t.accent).font(.system(size: 16, weight: .semibold)).padding(.top, 3)
+                ZStack(alignment: .topLeading) {
+                    if vm.input.isEmpty {
+                        Text(vm.isLoading ? (ar ? "اكتب وسيُرسل تلقائياً بعد ما يخلّص…" : "Type — auto-sends when it finishes…") : placeholder)
+                            .foregroundColor(t.textSecondary).font(.system(size: 16)).padding(.top, 2).allowsHitTesting(false)
+                    }
+                    MultilineInput(text: $vm.input, textColor: NSColor(t.textPrimary), onSend: { vm.send() })
+                        .frame(minHeight: 22, maxHeight: 100)
                 }
-                MultilineInput(text: $vm.input, textColor: NSColor(t.textPrimary), onSend: { vm.send() })
-                    .frame(minHeight: 22, maxHeight: 100)
             }
         }
     }
 
+    // Shows the message waiting to auto-send when the current turn finishes.
+    private func queuedBanner(_ text: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "clock.arrow.circlepath").font(.system(size: 11))
+            Text((ar ? "مجدوَل: " : "Queued: ") + String(text.prefix(60))).font(.system(size: 11)).lineLimit(1)
+            Spacer()
+            Button { vm.queued = nil } label: {
+                Image(systemName: "xmark.circle.fill").font(.system(size: 11))
+            }.buttonStyle(.plain)
+        }
+        .foregroundColor(t.textSecondary)
+        .padding(.horizontal, 8).padding(.vertical, 4)
+        .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(t.accent.opacity(0.14)))
+    }
+
     private func iconHidden(_ id: String) -> Bool { Settings.shared.isIconHidden(id) }
 
-    // The row of tool icons, reused horizontally (classic/chat), vertically (rail),
-    // or inside a popover (minimal). Each icon can be hidden non-destructively from
-    // Settings → the icon manager (nothing is deleted, just hidden/restored).
-    @ViewBuilder private var controlIcons: some View {
-        if !iconHidden("newchat") {
+    // Icons the user keeps ON the surface vs the ones tucked under "⋯ More".
+    private var surfaceIconIds: [String] { PanelIcon.all.map { $0.id }.filter { !iconHidden($0) } }
+    private var moreIconIds: [String]    { PanelIcon.all.map { $0.id }.filter {  iconHidden($0) } }
+
+    // One control icon addressed by id (surface chip with live state + spring).
+    @ViewBuilder private func controlIcon(_ id: String) -> some View {
+        switch id {
+        case "newchat":
             iconButton("square.and.pencil", active: false, help: ar ? "محادثة جديدة (⌘N)" : "New chat (⌘N)") { vm.newChat() }
                 .keyboardShortcut("n", modifiers: .command)
-        }
-        if !iconHidden("mode") {
-            iconButton(vm.savingMode ? "leaf.fill" : "brain",
-                       active: vm.savingMode,
-                       help: vm.savingMode
-                            ? (ar ? "وضع التوفير (رخيص/مباشر) — اضغط للعميق" : "Saving mode (cheap) — tap for Deep")
-                            : (ar ? "وضع عميق (هيرميس كامل + ديسكتوب) — اضغط للتوفير" : "Deep mode (full Hermes) — tap for Saving")) {
-                vm.toggleSaving()
+        case "mode":
+            iconButton(vm.savingMode ? "leaf.fill" : "brain", active: vm.savingMode,
+                       help: vm.savingMode ? (ar ? "وضع التوفير (رخيص/مباشر) — اضغط للعميق" : "Saving mode — tap for Deep")
+                                           : (ar ? "وضع عميق (هيرميس كامل) — اضغط للتوفير" : "Deep mode — tap for Saving")) { vm.toggleSaving() }
+        case "web":
+            if vm.savingMode {
+                iconButton(vm.webSearch ? "globe" : "globe.badge.chevron.backward", active: vm.webSearch,
+                           help: ar ? "بحث ويب في وضع التوفير" : "Web search in Saving mode") { vm.toggleWebSearch() }
             }
-        }
-        if vm.savingMode, !iconHidden("web") {
-            iconButton(vm.webSearch ? "globe" : "globe.badge.chevron.backward",
-                       active: vm.webSearch,
-                       help: ar ? "بحث ويب في وضع التوفير (نتائج حالية · تكلفة بسيطة للبحث)"
-                                : "Web search in Saving mode (current results · small per-search cost)") {
-                vm.toggleWebSearch()
-            }
-        }
-        if !iconHidden("attach") {
+        case "attach":
             iconButton("paperclip", active: false, help: ar ? "إرفاق ملف أو صورة" : "Attach file or image") { openFilePicker() }
-        }
-        if !iconHidden("scrape") {
-            iconButton("doc.text.magnifyingglass", active: false, help: ar ? "قراءة/فحص سريع (Scrapling)" : "Quick read (Scrapling)") { vm.applySpiderPrefix() }
-        }
-        if !iconHidden("screen") {
+        case "scrape":
+            iconButton("doc.text.magnifyingglass", active: false, help: ar ? "قراءة/فحص سريع (Scrapling)" : "Quick read") { vm.applySpiderPrefix() }
+        case "screen":
             iconButton(vm.withScreenshot ? "eye.fill" : "eye.slash", active: vm.withScreenshot, help: ar ? "رؤية الشاشة" : "See screen") { vm.setWithScreenshot(!vm.withScreenshot) }
-        }
-        if !iconHidden("pin") {
+        case "pin":
             iconButton(pinIcon, active: vm.pinMode != .off, help: pinHelp) { vm.cyclePinMode() }
-        }
-        if !iconHidden("notify") {
+        case "notify":
             iconButton(vm.notifyWhenDone ? "bell.fill" : "bell.slash", active: vm.notifyWhenDone, help: ar ? "أشعرني لما يخلّص" : "Notify when done") { vm.toggleNotify() }
-        }
-        if !iconHidden("spawn") {
-            iconButton("plus.rectangle.on.rectangle", active: false, help: ar ? "نافذة هيرميس جديدة (مستقلة)" : "New Hermes window (independent)") {
+        case "spawn":
+            iconButton("plus.rectangle.on.rectangle", active: false, help: ar ? "نافذة هيرميس جديدة (مستقلة)" : "New Hermes window") {
                 NotificationCenter.default.post(name: .hbSpawnWindow, object: nil)
             }
-        }
-        if !iconHidden("desktop") {
+        case "desktop":
             iconButton("macwindow.on.rectangle", active: false, help: ar ? "افتح هيرميس ديسكتوب" : "Open Hermes Desktop") { openHermesDesktop() }
+        default:
+            EmptyView()
         }
+    }
+
+    // Perform an icon's action from the "⋯ More" menu.
+    private func triggerIcon(_ id: String) {
+        switch id {
+        case "newchat": vm.newChat()
+        case "mode":    vm.toggleSaving()
+        case "web":     vm.toggleWebSearch()
+        case "attach":  openFilePicker()
+        case "scrape":  vm.applySpiderPrefix()
+        case "screen":  vm.setWithScreenshot(!vm.withScreenshot)
+        case "pin":     vm.cyclePinMode()
+        case "notify":  vm.toggleNotify()
+        case "spawn":   NotificationCenter.default.post(name: .hbSpawnWindow, object: nil)
+        case "desktop": openHermesDesktop()
+        default: break
+        }
+    }
+
+    // Surface icons + a "⋯ More" popover holding the ones moved off the surface.
+    @ViewBuilder private var controlIcons: some View {
+        ForEach(surfaceIconIds, id: \.self) { controlIcon($0) }
+        if !moreIconIds.isEmpty { moreIconsMenu }
+    }
+
+    private var moreIconsMenu: some View {
+        Menu {
+            ForEach(moreIconIds, id: \.self) { id in
+                if let icon = PanelIcon.all.first(where: { $0.id == id }) {
+                    Button { triggerIcon(id) } label: { Label(icon.title(ar), systemImage: icon.symbol) }
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis").font(.system(size: 14, weight: .medium))
+                .foregroundColor(t.textSecondary)
+                .frame(width: 30, height: 26)
+                .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(t.surface.opacity(0.55)))
+                .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(t.textSecondary.opacity(0.16), lineWidth: 1))
+        }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .help(ar ? "أدوات أكثر" : "More tools")
     }
 
     @ViewBuilder private var sendOrStop: some View {
@@ -1354,7 +1419,48 @@ struct AskView: View {
             }
             Text(modeHint).font(.system(size: 10)).foregroundColor(t.textSecondary.opacity(0.7)).lineLimit(1)
             Spacer()
+            modelPicker
         }
+    }
+
+    // In-panel model picker — switch the active model without opening Settings.
+    // Writes to the Saving or Deep model depending on the current mode.
+    private var modelPicker: some View {
+        Menu {
+            let models = Settings.shared.cachedModels
+            if models.isEmpty {
+                Text(ar ? "اجلب الموديلات من الإعدادات" : "Fetch models in Settings")
+            } else {
+                ForEach(models, id: \.self) { m in
+                    Button { setActiveModel(m) } label: {
+                        if m == currentModelName { Label(m, systemImage: "checkmark") } else { Text(m) }
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "cpu").font(.system(size: 10))
+                Text(String(currentModelName.prefix(18))).font(.system(size: 11)).lineLimit(1)
+            }
+            .foregroundColor(t.textSecondary)
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(Capsule().fill(t.surface.opacity(0.55)))
+            .overlay(Capsule().strokeBorder(t.textSecondary.opacity(0.14), lineWidth: 1))
+        }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .help(ar ? "اختر الموديل" : "Choose model")
+    }
+
+    private var currentModelName: String {
+        let s = Settings.shared
+        if vm.savingMode { return s.savingModel.isEmpty ? "—" : s.savingModel }
+        return s.deepModel.isEmpty ? "hermes-agent" : s.deepModel
+    }
+
+    private func setActiveModel(_ m: String) {
+        let s = Settings.shared
+        if vm.savingMode { s.savingModel = m } else { s.deepModel = m }
+        s.save()   // posts didChange → panel refreshes the label
     }
 
     private var timerText: String { elapsedLabel(vm.elapsed) }
