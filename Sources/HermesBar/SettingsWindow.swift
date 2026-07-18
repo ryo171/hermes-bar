@@ -55,6 +55,7 @@ final class SettingsModel: ObservableObject {
     @Published var closeHotKey: HotKeyCombo { didSet { commit() } }
     @Published var layoutName: String { didSet { commit() } }
     @Published var iconStyle: String { didSet { commit() } }
+    @Published var thinkingStyle: String { didSet { commit() } }
     @Published var serverManagedSessions: Bool { didSet { commit() } }
     @Published var directHost: String { didSet { commit() } }
     @Published var savingModel: String { didSet { commit() } }
@@ -75,6 +76,7 @@ final class SettingsModel: ObservableObject {
         closeHotKey = s.closeHotKey
         layoutName = s.layoutName
         iconStyle = s.iconStyle
+        thinkingStyle = s.thinkingStyle
         serverManagedSessions = s.serverManagedSessions
         directHost = s.directHost
         savingModel = s.savingModel
@@ -96,6 +98,7 @@ final class SettingsModel: ObservableObject {
         s.closeHotKey = closeHotKey
         s.layoutName = layoutName
         s.iconStyle = iconStyle
+        s.thinkingStyle = thinkingStyle
         s.serverManagedSessions = serverManagedSessions
         s.directHost = directHost
         s.savingModel = savingModel
@@ -213,6 +216,14 @@ struct SettingsView: View {
                             ForEach(IconStyle.allCases, id: \.rawValue) { i in Text(iconLabel(i)).tag(i.rawValue) }
                         }
                         .labelsHidden().frame(width: 220).disabled(hasCustomIcon)
+                    }
+                    row(ar ? "أنميشن التفكير" : "Thinking animation") {
+                        Picker("", selection: $model.thinkingStyle) {
+                            ForEach(ThinkingStyle.allCases, id: \.rawValue) { s in
+                                Text(ar ? s.labelAr : s.labelEn).tag(s.rawValue)
+                            }
+                        }
+                        .labelsHidden().frame(width: 220)
                     }
                     row(ar ? "صورة مخصّصة" : "Custom image") { customImageControls }
 

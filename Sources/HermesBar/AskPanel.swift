@@ -24,6 +24,34 @@ extension Notification.Name {
     static let hbPendingResult = Notification.Name("hb.pendingResult")
 }
 
+// How the "Hermes is thinking" state is visualised — user-selectable in Settings.
+enum ThinkingStyle: String, CaseIterable {
+    case topWash        // morphing colour wash across the top (default)
+    case radialAurora   // circular drifting colour blobs
+    case pulseDots      // three pulsing dots
+    case statusLine     // Swiggy-style cycling status text
+    case off            // plain spinner only
+
+    var labelAr: String {
+        switch self {
+        case .topWash: return "وش علوي متدرّج"
+        case .radialAurora: return "شفق دائري"
+        case .pulseDots: return "نقاط نابضة"
+        case .statusLine: return "حالة متغيّرة"
+        case .off: return "بدون"
+        }
+    }
+    var labelEn: String {
+        switch self {
+        case .topWash: return "Top wash"
+        case .radialAurora: return "Radial aurora"
+        case .pulseDots: return "Pulse dots"
+        case .statusLine: return "Status line"
+        case .off: return "Off"
+        }
+    }
+}
+
 // MARK: - Control-icon catalog (shared by the panel and the Settings manager)
 
 // A stable id + label for every icon in the control row, so the Settings
@@ -47,6 +75,8 @@ struct PanelIcon: Identifiable {
         PanelIcon(id: "notify",  symbol: "bell",              labelAr: "إشعار",        labelEn: "Notify"),
         PanelIcon(id: "spawn",   symbol: "plus.rectangle.on.rectangle", labelAr: "نافذة جديدة", labelEn: "New window"),
         PanelIcon(id: "desktop", symbol: "macwindow.on.rectangle", labelAr: "هيرميس ديسكتوب", labelEn: "Hermes Desktop"),
+        PanelIcon(id: "tasks",   symbol: "checklist", labelAr: "مهمة (Kanban)", labelEn: "Task (Kanban)"),
+        PanelIcon(id: "schedule", symbol: "calendar.badge.clock", labelAr: "جدولة", labelEn: "Schedule"),
     ]
 }
 
@@ -91,6 +121,72 @@ struct ThinkingWash: View {
                 )
         }
         .allowsHitTesting(false)
+    }
+}
+
+// Circular drifting colour blobs behind the top of the panel (alternative to the
+// top wash) — a soft "aurora" that morphs while thinking.
+struct RadialAurora: View {
+    private let colors: [Color] = [
+        Color(red: 0.42, green: 0.55, blue: 1.00),
+        Color(red: 0.30, green: 0.85, blue: 0.80),
+        Color(red: 0.98, green: 0.55, blue: 0.45),
+        Color(red: 0.85, green: 0.50, blue: 0.95),
+    ]
+    var body: some View {
+        TimelineView(.animation) { tl in
+            let t = tl.date.timeIntervalSinceReferenceDate
+            ZStack {
+                ForEach(0..<colors.count, id: \.self) { i in
+                    Circle()
+                        .fill(colors[i])
+                        .frame(width: 200, height: 200)
+                        .offset(x: CGFloat(cos(t * 0.5 + Double(i) * 1.7)) * 80,
+                                y: CGFloat(sin(t * 0.42 + Double(i) * 1.3)) * 50)
+                        .blur(radius: 60)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .opacity(0.5)
+            .mask(LinearGradient(colors: [.white, .white.opacity(0.2), .clear], startPoint: .top, endPoint: .bottom))
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+// Three pulsing dots.
+struct PulseDots: View {
+    var tint: Color
+    var body: some View {
+        TimelineView(.animation) { tl in
+            let t = tl.date.timeIntervalSinceReferenceDate
+            HStack(spacing: 5) {
+                ForEach(0..<3, id: \.self) { i in
+                    let p = abs(sin(t * 3.0 + Double(i) * 0.6))
+                    Circle().fill(tint)
+                        .frame(width: 7, height: 7)
+                        .scaleEffect(0.6 + 0.4 * p)
+                        .opacity(0.45 + 0.55 * p)
+                }
+            }
+        }
+    }
+}
+
+// Swiggy-style cycling status: each phrase slides up + fades as the next arrives.
+struct StatusCycler: View {
+    let phrases: [String]
+    var tint: Color
+    @State private var idx = 0
+    private let timer = Timer.publish(every: 1.6, on: .main, in: .common).autoconnect()
+    var body: some View {
+        Text(phrases.isEmpty ? "" : phrases[idx % phrases.count])
+            .font(.system(size: 13)).foregroundColor(tint)
+            .id(idx)
+            .transition(.asymmetric(insertion: .move(edge: .bottom).combined(with: .opacity),
+                                    removal: .move(edge: .top).combined(with: .opacity)))
+            .onReceive(timer) { _ in withAnimation(.easeInOut(duration: 0.35)) { idx += 1 } }
+            .clipped()
     }
 }
 
@@ -432,6 +528,18 @@ final class AskViewModel: ObservableObject {
         let prefix = isArabic
             ? "استخدم Scrapling لقراءة/فحص هذا الرابط بسرعة: "
             : "Use Scrapling to quickly read/scrape this URL: "
+        if !input.hasPrefix(prefix) { input = prefix + input }
+    }
+
+    // Prime a Kanban task-creation prompt (Hermes manages the board via its tools).
+    func applyTaskPrefix() {
+        let prefix = isArabic ? "أضِف مهمة إلى لوحة Kanban في هيرميس: " : "Add a task to my Hermes Kanban board: "
+        if !input.hasPrefix(prefix) { input = prefix + input }
+    }
+
+    // Prime a scheduling (cron) prompt.
+    func applySchedulePrefix() {
+        let prefix = isArabic ? "جدوِل هذه المهمة (cron) في هيرميس: " : "Schedule this task (cron) in Hermes: "
         if !input.hasPrefix(prefix) { input = prefix + input }
     }
 
@@ -959,13 +1067,21 @@ struct AskView: View {
     @ViewBuilder private var background: some View {
         ZStack {
             baseBackground
-            // Thinking wash lives in the TOP of the panel background (behind content),
-            // clipped to the panel shape — not on the window edges.
+            // The thinking visual (behind content, clipped to the panel) depends on the
+            // chosen style — top wash / radial aurora / or none (dots & status are inline).
             if vm.isLoading {
-                ThinkingWash()
+                thinkingBackground
                     .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                     .transition(.opacity)
             }
+        }
+    }
+
+    @ViewBuilder private var thinkingBackground: some View {
+        switch ThinkingStyle(rawValue: Settings.shared.thinkingStyle) ?? .topWash {
+        case .topWash:      ThinkingWash()
+        case .radialAurora: RadialAurora()
+        default:            EmptyView()
         }
     }
 
@@ -1069,6 +1185,10 @@ struct AskView: View {
             }
         case "desktop":
             iconButton("macwindow.on.rectangle", active: false, help: ar ? "افتح هيرميس ديسكتوب" : "Open Hermes Desktop") { openHermesDesktop() }
+        case "tasks":
+            iconButton("checklist", active: false, help: ar ? "أنشئ مهمة في لوحة Kanban" : "Create a Kanban task") { vm.applyTaskPrefix() }
+        case "schedule":
+            iconButton("calendar.badge.clock", active: false, help: ar ? "جدوِل مهمة (cron)" : "Schedule a task (cron)") { vm.applySchedulePrefix() }
         default:
             EmptyView()
         }
@@ -1087,6 +1207,8 @@ struct AskView: View {
         case "notify":  vm.toggleNotify()
         case "spawn":   NotificationCenter.default.post(name: .hbSpawnWindow, object: nil)
         case "desktop": openHermesDesktop()
+        case "tasks":   vm.applyTaskPrefix()
+        case "schedule": vm.applySchedulePrefix()
         default: break
         }
     }
@@ -1221,11 +1343,7 @@ struct AskView: View {
                         messageView(msg).id(msg.id)
                     }
                     if vm.isLoading, (vm.messages.last?.text.isEmpty ?? false) {
-                        HStack(spacing: 8) {
-                            ProgressView().controlSize(.small)
-                            Text((ar ? "هيرميس يشتغل… " : "Working… ") + timerText)
-                                .font(.system(size: 13)).foregroundColor(t.textSecondary)
-                        }
+                        loadingIndicator
                     }
                     if !vm.errorText.isEmpty {
                         Text(vm.errorText).font(.system(size: 14)).foregroundColor(.red).textSelection(.enabled)
@@ -1461,6 +1579,31 @@ struct AskView: View {
         let s = Settings.shared
         if vm.savingMode { s.savingModel = m } else { s.deepModel = m }
         s.save()   // posts didChange → panel refreshes the label
+    }
+
+    private var thinkingPhrases: [String] {
+        ar ? ["يقرأ طلبك…", "يجمع أفكاره…", "يجهّز الإجابة…", "يكتب…"]
+           : ["Reading your request…", "Gathering thoughts…", "Preparing the answer…", "Writing…"]
+    }
+
+    // The "thinking" indicator shown before the first token, styled per the chosen
+    // thinking-animation setting.
+    @ViewBuilder private var loadingIndicator: some View {
+        let style = ThinkingStyle(rawValue: Settings.shared.thinkingStyle) ?? .topWash
+        HStack(spacing: 8) {
+            switch style {
+            case .pulseDots:
+                PulseDots(tint: t.accent)
+                Text(timerText).font(.system(size: 12)).foregroundColor(t.textSecondary.opacity(0.8))
+            case .statusLine:
+                PulseDots(tint: t.accent)
+                StatusCycler(phrases: thinkingPhrases, tint: t.textSecondary)
+            default:
+                ProgressView().controlSize(.small)
+                Text((ar ? "هيرميس يفكّر… " : "Thinking… ") + timerText)
+                    .font(.system(size: 13)).foregroundColor(t.textSecondary)
+            }
+        }
     }
 
     private var timerText: String { elapsedLabel(vm.elapsed) }
