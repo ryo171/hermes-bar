@@ -358,7 +358,7 @@ struct ChatMessage: Identifiable, Equatable {
 struct KanbanCard: Codable, Identifiable, Equatable {
     var id = UUID()
     var title: String
-    var column: Int = 0   // 0 = To-do, 1 = Doing, 2 = Done
+    var done: Bool = false
 }
 
 final class KanbanStore: ObservableObject {
@@ -373,17 +373,23 @@ final class KanbanStore: ObservableObject {
     private func save() {
         if let d = try? JSONEncoder().encode(cards) { UserDefaults.standard.set(d, forKey: key) }
     }
-    func add(_ title: String, column: Int = 0) {
+    func add(_ title: String) {
         let t = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
-        cards.append(KanbanCard(title: t, column: column))
+        cards.append(KanbanCard(title: t))
     }
-    func move(_ card: KanbanCard, by delta: Int) {
-        guard let i = cards.firstIndex(where: { $0.id == card.id }) else { return }
-        cards[i].column = max(0, min(2, cards[i].column + delta))
+    func toggle(_ card: KanbanCard) {
+        if let i = cards.firstIndex(where: { $0.id == card.id }) { cards[i].done.toggle() }
     }
     func remove(_ card: KanbanCard) { cards.removeAll { $0.id == card.id } }
-    func cards(in col: Int) -> [KanbanCard] { cards.filter { $0.column == col } }
+    func moveUp(_ card: KanbanCard) {
+        guard let i = cards.firstIndex(where: { $0.id == card.id }), i > 0 else { return }
+        cards.swapAt(i, i - 1)
+    }
+    func moveDown(_ card: KanbanCard) {
+        guard let i = cards.firstIndex(where: { $0.id == card.id }), i < cards.count - 1 else { return }
+        cards.swapAt(i, i + 1)
+    }
 }
 
 // MARK: - Multiline input (Enter = send, Shift+Enter = newline)
@@ -676,9 +682,8 @@ final class AskViewModel: ObservableObject {
         guard answer.count > 40 else { suggestions = []; return }
         let s = Settings.shared
         let ar = isArabic
-        let prompt = (ar ? "هذه إجابة:\n" : "Answer:\n") + String(answer.prefix(1400))
-            + (ar ? "\n\nاقترح ٣ أسئلة متابعة قصيرة جداً. سطر لكل سؤال، بدون ترقيم ولا مقدمات."
-                  : "\n\nSuggest 3 very short follow-up questions. One per line, no numbering or preamble.")
+        let prompt = "الإجابة:\n" + String(answer.prefix(1400))
+            + "\n\nاقترح ٣ أسئلة متابعة قصيرة جداً **بالعربية فقط**، سطر لكل سؤال، بدون ترقيم، بدون مقدمات، وبدون أي وسوم تفكير مثل <think>."
         var acc = ""
         _ = HermesClient.shared.askStream(
             host: s.directHost,
@@ -692,9 +697,13 @@ final class AskViewModel: ObservableObject {
             onDelta: { piece in acc += piece },
             onSession: { _ in },
             onDone: { [weak self] _ in
-                let lines = acc.split(separator: "\n")
+                // Drop any <think>…</think> reasoning the model may leak.
+                var clean = acc
+                if let r = clean.range(of: "</think>") { clean = String(clean[r.upperBound...]) }
+                clean = clean.replacingOccurrences(of: "<think>", with: "").replacingOccurrences(of: "</think>", with: "")
+                let lines = clean.split(separator: "\n")
                     .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: " -•*\t")) }
-                    .filter { $0.count > 4 }
+                    .filter { $0.count > 4 && !$0.hasPrefix("<") }
                     .prefix(3)
                 self?.suggestions = Array(lines)
             }
@@ -1880,9 +1889,10 @@ struct AskView: View {
                 .padding(.vertical, 2)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .overlay(alignment: .bottomLeading) {
-                // Simple, loop-free: shown once there's a conversation. (Geometry-based
-                // "hide at bottom" caused a render feedback loop / hang — removed.)
+            .overlay(alignment: .bottomTrailing) {
+                // In RTL, trailing = visual LEFT (where the user wants it). Loop-free:
+                // shown once there's a conversation. (Geometry-based "hide at bottom"
+                // caused a render feedback loop / hang — removed.)
                 if vm.messages.count >= 2 { scrollDownButton(proxy) }
             }
         }
@@ -1902,7 +1912,7 @@ struct AskView: View {
                 .overlay(Circle().strokeBorder(t.textSecondary.opacity(0.22), lineWidth: 1))
         }
         .buttonStyle(SpringPopButtonStyle())
-        .padding(.leading, 6).padding(.bottom, 6)
+        .padding(.trailing, 6).padding(.bottom, 6)   // trailing = left in RTL
         .transition(.opacity)
         .help(ar ? "النزول لآخر سطر" : "Jump to latest")
     }
@@ -1912,29 +1922,36 @@ struct AskView: View {
     private var kanbanOverlay: some View {
         ZStack {
             Color.black.opacity(0.35).onTapGesture { showKanban = false }
-            VStack(spacing: 10) {
+            VStack(spacing: 12) {
                 HStack(spacing: 8) {
                     Image(systemName: "checklist").foregroundColor(t.accent)
-                    Text(ar ? "لوحة Kanban" : "Kanban board").font(.system(size: 15, weight: .bold)).foregroundColor(t.textPrimary)
+                    Text(ar ? "المهام" : "Tasks").font(.system(size: 15, weight: .bold)).foregroundColor(t.textPrimary)
                     Spacer()
                     Button { showKanban = false } label: {
                         Image(systemName: "xmark.circle.fill").foregroundColor(t.textSecondary)
                     }.buttonStyle(.plain)
                 }
-                HStack(alignment: .top, spacing: 8) {
-                    kanbanColumn(0, ar ? "قائمة" : "To-do")
-                    kanbanColumn(1, ar ? "جارٍ" : "Doing")
-                    kanbanColumn(2, ar ? "تم" : "Done")
-                }
                 HStack(spacing: 8) {
-                    TextField(ar ? "أضف بطاقة…" : "Add a card…", text: $kanbanInput)
+                    TextField(ar ? "اكتب مهمة وأضفها…" : "Type a task…", text: $kanbanInput)
                         .textFieldStyle(.roundedBorder)
                         .onSubmit { kanban.add(kanbanInput); kanbanInput = "" }
-                    Button(ar ? "أضف" : "Add") { kanban.add(kanbanInput); kanbanInput = "" }.buttonStyle(.borderedProminent)
+                    Button(ar ? "أضف" : "Add") { kanban.add(kanbanInput); kanbanInput = "" }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(kanbanInput.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: 8) {
+                        ForEach(kanban.cards) { card in kanbanRow(card) }
+                        if kanban.cards.isEmpty {
+                            Text(ar ? "لا مهام بعد — اكتب وأضف فوق." : "No tasks yet — add one above.")
+                                .font(.system(size: 12)).foregroundColor(t.textSecondary)
+                                .frame(maxWidth: .infinity, alignment: .center).padding(.top, 20)
+                        }
+                    }
                 }
             }
             .padding(16)
-            .frame(maxWidth: 560, maxHeight: 460)
+            .frame(maxWidth: 560, maxHeight: 480)
             .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(t.background))
             .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(t.textSecondary.opacity(0.2), lineWidth: 1))
             .padding(24)
@@ -1997,36 +2014,27 @@ struct AskView: View {
         showSchedule = false
     }
 
-    private func kanbanColumn(_ col: Int, _ title: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(title).font(.system(size: 12, weight: .semibold)).foregroundColor(t.textSecondary)
-                Spacer()
-                Text("\(kanban.cards(in: col).count)").font(.system(size: 11)).foregroundColor(t.textSecondary)
-            }
-            ScrollView(showsIndicators: false) {
-                VStack(spacing: 6) {
-                    ForEach(kanban.cards(in: col)) { card in
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(card.title).font(.system(size: 12)).foregroundColor(t.textPrimary)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            HStack(spacing: 12) {
-                                if col > 0 { Button { kanban.move(card, by: -1) } label: { Image(systemName: "arrow.left") }.buttonStyle(.plain) }
-                                if col < 2 { Button { kanban.move(card, by: 1) } label: { Image(systemName: "arrow.right") }.buttonStyle(.plain) }
-                                Spacer()
-                                Button { kanban.remove(card) } label: { Image(systemName: "trash").foregroundColor(.red) }.buttonStyle(.plain)
-                            }.font(.system(size: 11)).foregroundColor(t.textSecondary)
-                        }
-                        .padding(8)
-                        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(t.surface.opacity(0.6)))
-                    }
-                }
-            }
+    // A full-width task rectangle: done toggle · text · reorder · delete.
+    private func kanbanRow(_ card: KanbanCard) -> some View {
+        HStack(spacing: 10) {
+            Button { kanban.toggle(card) } label: {
+                Image(systemName: card.done ? "checkmark.circle.fill" : "circle")
+                    .foregroundColor(card.done ? .green : t.textSecondary)
+            }.buttonStyle(.plain)
+            Text(card.title)
+                .font(.system(size: 13)).foregroundColor(card.done ? t.textSecondary : t.textPrimary)
+                .strikethrough(card.done)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(spacing: 2) {
+                Button { kanban.moveUp(card) } label: { Image(systemName: "chevron.up") }.buttonStyle(.plain)
+                Button { kanban.moveDown(card) } label: { Image(systemName: "chevron.down") }.buttonStyle(.plain)
+            }.font(.system(size: 10)).foregroundColor(t.textSecondary)
+            Button { kanban.remove(card) } label: { Image(systemName: "trash").foregroundColor(.red) }.buttonStyle(.plain)
         }
-        .padding(8)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(t.surface.opacity(0.25)))
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(t.surface.opacity(0.5)))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(t.textSecondary.opacity(0.15), lineWidth: 1))
     }
 
     @ViewBuilder private func messageView(_ msg: ChatMessage) -> some View {

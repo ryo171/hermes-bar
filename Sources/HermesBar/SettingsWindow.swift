@@ -433,6 +433,20 @@ struct SettingsView: View {
                 }
                 .padding(.vertical, 2)
             }
+            if !model.savedTemplates.isEmpty {
+                Text(ar ? "قوالبي (عدّل الاسم)" : "My templates (rename)").font(.system(size: 11)).foregroundColor(.secondary)
+                ForEach($model.savedTemplates) { $st in
+                    HStack(spacing: 8) {
+                        TextField(ar ? "اسم القالب" : "Template name", text: $st.label)
+                            .textFieldStyle(.roundedBorder).frame(width: 180)
+                        Spacer()
+                        Button(ar ? "استخدم" : "Apply") { applyTemplate(st.themeName, st.layout, st.hidden) }.font(.system(size: 11))
+                        Button { model.savedTemplates.removeAll { $0.id == st.id } } label: {
+                            Image(systemName: "trash").foregroundColor(.red)
+                        }.buttonStyle(.plain)
+                    }
+                }
+            }
         }
     }
 
