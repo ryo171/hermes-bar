@@ -2061,9 +2061,14 @@ struct AskView: View {
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
-                    // Native, always-selectable rendering (clean copy, RTL-aware) with
-                    // code blocks shown as rectangles that have their own copy button.
-                    assistantBody(msg.text)
+                    // MarkdownUI handles wrapping, resize, RTL, and lists/headings
+                    // consistently. Code blocks use our styled block (rectangle + copy
+                    // button). "Copy all" copies clean text via SelectableAttributedText.plain.
+                    Markdown(msg.text)
+                        .markdownTextStyle { ForegroundColor(t.textPrimary); FontSize(16) }
+                        .markdownBlockStyle(\.codeBlock) { configuration in codeBlock(configuration) }
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     messageActions(msg)
                 }
             }
