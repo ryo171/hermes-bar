@@ -2401,11 +2401,6 @@ struct AskView: View {
     }
 
     private func openHermesDesktop() {
-        // One-click open the exact session via Hermes' deep link. The session is
-        // already titled (PATCHed on first reply), so it's recognizable too.
-        let deepLink = (Settings.shared.serverManagedSessions && vm.sessionEstablished)
-            ? "hermes://session/\(vm.sessionId)" : nil
-
         func open(_ args: [String]) -> Int32 {
             let task = Process()
             task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
@@ -2415,18 +2410,38 @@ struct AskView: View {
             return task.terminationStatus
         }
 
-        if let link = deepLink {
-            // If the scheme isn't handled yet (older Desktop), fall back to launch.
-            if open([link]) != 0 { _ = open(["-a", "Hermes"]) }
-            let title = vm.sessionTitle
-            Notifier.notify(
-                title: ar ? "فتح المحادثة في هيرميس ديسكتوب" : "Opening in Hermes Desktop",
-                body: title.isEmpty ? (ar ? "نفس الجلسة" : "The same session")
-                                     : (ar ? "الجلسة: \(title)" : "Session: \(title)")
-            )
-        } else {
-            _ = open(["-a", "Hermes"])
+        // Deep mode with a real, server-managed Hermes session → open that exact
+        // session via the deep link (Desktop loads the full history automatically).
+        let hasHermesSession = Settings.shared.serverManagedSessions && vm.sessionEstablished && !vm.savingMode
+        if hasHermesSession {
+            let link = "hermes://session/\(vm.sessionId)"
+            if open([link]) == 0 {
+                let title = vm.sessionTitle
+                Notifier.notify(
+                    title: ar ? "فتح المحادثة في هيرميس ديسكتوب" : "Opening in Hermes Desktop",
+                    body: title.isEmpty ? (ar ? "نفس الجلسة" : "The same session")
+                                         : (ar ? "الجلسة: \(title)" : "Session: \(title)")
+                )
+                vm.onClose?()
+                return
+            }
+            // Scheme not handled (older Desktop) → fall through to transcript handoff.
         }
+
+        // Saving mode / no Hermes session → hand off the full transcript so you can
+        // continue it in Desktop: copy it to the clipboard, then open Hermes to paste.
+        let transcript = vm.transcriptForHandoff()
+        if !transcript.isEmpty {
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            pb.setString(transcript, forType: .string)
+            Notifier.notify(
+                title: ar ? "المحادثة جاهزة للمتابعة" : "Conversation ready to continue",
+                body: ar ? "نُسخت المحادثة — الصقها (⌘V) في هيرميس وأكمل من حيث وقفت."
+                         : "Copied — paste (⌘V) into Hermes to continue where you left off."
+            )
+        }
+        _ = open(["-a", "Hermes"])
         vm.onClose?()
     }
 
