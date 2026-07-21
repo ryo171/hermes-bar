@@ -99,14 +99,14 @@ final class HermesClient {
     // Set a human title on a Hermes session (shows in Desktop's session list).
     // Fire-and-forget PATCH /api/sessions/{id}. Best-effort — ignores failures.
     func setSessionTitle(host: String?, sessionId: String, title: String) {
-        let useHost = host ?? Settings.shared.host
+        let useHost = host ?? Settings.shared.deepHost()
         let encodedId = sessionId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? sessionId
         guard !title.isEmpty, let url = URL(string: "\(useHost)/api/sessions/\(encodedId)") else { return }
         var req = URLRequest(url: url)
         req.httpMethod = "PATCH"
         req.timeoutInterval = 10
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.setValue("Bearer \(Settings.shared.resolvedAPIKey())", forHTTPHeaderField: "Authorization")
+        req.setValue("Bearer \(Settings.shared.deepKey())", forHTTPHeaderField: "Authorization")
         req.httpBody = try? JSONSerialization.data(withJSONObject: ["title": title])
         URLSession.shared.dataTask(with: req).resume()
     }

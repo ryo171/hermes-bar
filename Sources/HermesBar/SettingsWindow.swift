@@ -61,6 +61,11 @@ final class SettingsModel: ObservableObject {
     @Published var appearanceMode: String { didSet { commit() } }
     @Published var showSuggestions: Bool { didSet { commit() } }
     @Published var serverManagedSessions: Bool { didSet { commit() } }
+    @Published var serverHost: String { didSet { commit() } }
+    @Published var serverKey: String { didSet { commit() } }
+    @Published var useServer: Bool { didSet { commit() } }
+    @Published var serverSavingModel: String { didSet { commit() } }
+    @Published var serverDeepModel: String { didSet { commit() } }
     @Published var directHost: String { didSet { commit() } }
     @Published var savingModel: String { didSet { commit() } }
     @Published var savingVisionModel: String { didSet { commit() } }
@@ -88,6 +93,11 @@ final class SettingsModel: ObservableObject {
         appearanceMode = s.appearanceMode
         showSuggestions = s.showSuggestions
         serverManagedSessions = s.serverManagedSessions
+        serverHost = s.serverHost
+        serverKey = s.serverKey
+        useServer = s.useServer
+        serverSavingModel = s.serverSavingModel
+        serverDeepModel = s.serverDeepModel
         directHost = s.directHost
         savingModel = s.savingModel
         savingVisionModel = s.savingVisionModel
@@ -116,6 +126,11 @@ final class SettingsModel: ObservableObject {
         s.appearanceMode = appearanceMode
         s.showSuggestions = showSuggestions
         s.serverManagedSessions = serverManagedSessions
+        s.serverHost = serverHost
+        s.serverKey = serverKey
+        s.useServer = useServer
+        s.serverSavingModel = serverSavingModel
+        s.serverDeepModel = serverDeepModel
         s.directHost = directHost
         s.savingModel = savingModel
         s.savingVisionModel = savingVisionModel
@@ -295,6 +310,35 @@ struct SettingsView: View {
                         Toggle("", isOn: $model.serverManagedSessions).labelsHidden().toggleStyle(.switch)
                             .help(ar ? "يخلي محادثات النافذة جلسات هيرميس حقيقية تكمّلها في الديسكتوب."
                                      : "Make panel chats real Hermes sessions you can continue in Desktop.")
+                    }
+                    Divider().opacity(0.4)
+                    row(ar ? "سيرفر هيرميس" : "Server Hermes") {
+                        TextField("https://api.rayans.dev", text: $model.serverHost)
+                            .textFieldStyle(.roundedBorder).frame(width: 220)
+                            .help(ar ? "رابط الـAPI Server على سيرفرك (الوضع العميق يستخدمه عند التبديل)."
+                                     : "Your server's API-Server URL (Deep mode uses it when switched).")
+                    }
+                    row(ar ? "مفتاح السيرفر" : "Server key") {
+                        SecureField("API_SERVER_KEY", text: $model.serverKey)
+                            .textFieldStyle(.roundedBorder).frame(width: 220)
+                    }
+                    row(ar ? "موديل توفير السيرفر" : "Server saving model") {
+                        TextField(ar ? "فارغ = الافتراضي" : "empty = default", text: $model.serverSavingModel)
+                            .textFieldStyle(.roundedBorder).frame(width: 220)
+                            .help(ar ? "الموديل السريع على السيرفر لوضع التوفير — فارغ يعني hermes-agent الافتراضي."
+                                     : "Quick model on the server for Saving mode — empty means the default hermes-agent.")
+                    }
+                    row(ar ? "موديل عمق السيرفر" : "Server deep model") {
+                        TextField(ar ? "فارغ = الافتراضي" : "empty = default", text: $model.serverDeepModel)
+                            .textFieldStyle(.roundedBorder).frame(width: 220)
+                            .help(ar ? "موديل الوضع العميق على السيرفر — فارغ يعني hermes-agent الافتراضي."
+                                     : "Deep-mode model on the server — empty means the default hermes-agent.")
+                    }
+                    row(ar ? "استخدم السيرفر" : "Use server") {
+                        Toggle("", isOn: $model.useServer).labelsHidden().toggleStyle(.switch)
+                            .disabled(model.serverHost.isEmpty)
+                            .help(ar ? "بدّل الوضع العميق بين المحلي والسيرفر (نفسه أيقونة «محلي/سيرفر» في اللوحة)."
+                                     : "Switch Deep mode between local and server (same as the Local/Server panel icon).")
                     }
                 }
 

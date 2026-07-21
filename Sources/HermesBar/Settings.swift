@@ -72,6 +72,21 @@ final class Settings: Codable {
     var apiKey: String = ""     // empty → resolved from ~/.hermes/.env at request time
     var captureFullScreen: Bool = true
 
+    // Remote (server) Hermes API-Server endpoint for Deep mode. When useServer is on,
+    // Deep mode talks to the server instead of the local gateway. One-tap switch.
+    var serverHost: String = ""     // e.g. https://api.rayans.dev
+    var serverKey: String = ""      // the server's API_SERVER_KEY
+    var useServer: Bool = false
+    // Per-destination models on the server (mirrors the local pair). Empty →
+    // the server's default agent ("hermes-agent"). Saving on the server is the
+    // same philosophy as local Saving: stateless, no session, minimal context.
+    var serverSavingModel: String = ""   // quick/cheap model on the server
+    var serverDeepModel: String = ""     // deep model on the server
+
+    // The host/key Deep mode should use right now (server when enabled + configured).
+    func deepHost() -> String { (useServer && !serverHost.isEmpty) ? serverHost : host }
+    func deepKey() -> String { (useServer && !serverHost.isEmpty) ? serverKey : resolvedAPIKey() }
+
     // Non-destructive icon manager: ids of control-row icons the user moved OFF the
     // surface. They aren't deleted — they live under the panel's "⋯ More" popover
     // and can be brought back to the surface anytime. See PanelIcon.all.
@@ -111,7 +126,8 @@ final class Settings: Codable {
         case thinkingSpeed, thinkingIntensity, appearanceMode, showSuggestions
         case directHost, savingModel, savingVisionModel, deepModel, directKey, searchApiKey
         case host, apiKey, captureFullScreen, hiddenIcons, customThemes, cachedModels
-        case savedTemplates, removedTemplates
+        case savedTemplates, removedTemplates, serverHost, serverKey, useServer
+        case serverSavingModel, serverDeepModel
     }
 
     init() {}
@@ -149,6 +165,11 @@ final class Settings: Codable {
         cachedModels = try c.decodeIfPresent([String].self, forKey: .cachedModels) ?? []
         savedTemplates = try c.decodeIfPresent([SavedTemplate].self, forKey: .savedTemplates) ?? []
         removedTemplates = try c.decodeIfPresent([String].self, forKey: .removedTemplates) ?? []
+        serverHost = try c.decodeIfPresent(String.self, forKey: .serverHost) ?? ""
+        serverKey = try c.decodeIfPresent(String.self, forKey: .serverKey) ?? ""
+        useServer = try c.decodeIfPresent(Bool.self, forKey: .useServer) ?? false
+        serverSavingModel = try c.decodeIfPresent(String.self, forKey: .serverSavingModel) ?? ""
+        serverDeepModel = try c.decodeIfPresent(String.self, forKey: .serverDeepModel) ?? ""
     }
 
     static func load() -> Settings {

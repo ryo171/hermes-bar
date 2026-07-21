@@ -81,6 +81,7 @@ struct PanelIcon: Identifiable {
         PanelIcon(id: "desktop", symbol: "macwindow.on.rectangle", labelAr: "هيرميس ديسكتوب", labelEn: "Hermes Desktop"),
         PanelIcon(id: "tasks",   symbol: "checklist", labelAr: "مهمة (Kanban)", labelEn: "Task (Kanban)"),
         PanelIcon(id: "schedule", symbol: "calendar.badge.clock", labelAr: "جدولة", labelEn: "Schedule"),
+        PanelIcon(id: "server",  symbol: "link", labelAr: "محلي/سيرفر", labelEn: "Local/Server"),
     ]
 }
 
@@ -94,6 +95,35 @@ struct SpringPopButtonStyle: ButtonStyle {
         configuration.label
             .scaleEffect(configuration.isPressed ? scale : 1.0)
             .animation(.spring(response: 0.30, dampingFraction: 0.42), value: configuration.isPressed)
+    }
+}
+
+// Copy button for code-block rectangles with a springy ✓ confirmation, matching
+// the message-copy feedback: icon pops into a green checkmark, then settles back.
+struct CodeCopyButton: View {
+    let code: String
+    let idleColor: Color
+    let helpCopy: String
+    let helpDone: String
+    @State private var copied = false
+
+    var body: some View {
+        Button {
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            pb.setString(code, forType: .string)
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.45)) { copied = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
+                withAnimation(.easeOut(duration: 0.25)) { copied = false }
+            }
+        } label: {
+            Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                .font(.system(size: 11, weight: copied ? .bold : .regular))
+                .foregroundColor(copied ? .green : idleColor)
+                .scaleEffect(copied ? 1.2 : 1.0)
+        }
+        .buttonStyle(.plain)
+        .help(copied ? helpDone : helpCopy)
     }
 }
 
@@ -763,7 +793,7 @@ final class AskViewModel: ObservableObject {
         let fast = (mode == "fast")
         let effort = fast ? "low" : "high"
         let detail = "high"
-        let host = fast ? fastHost() : Settings.shared.host
+        let host = fast ? fastHost() : Settings.shared.deepHost()
         // HermesBar-side web search (Tavily) — makes 🌐 work with ANY provider.
         let wantsSearch = savingMode && webSearch && !Settings.shared.searchApiKey.isEmpty
         let searchKey = Settings.shared.searchApiKey
@@ -880,13 +910,29 @@ final class AskViewModel: ObservableObject {
         flushCancellable = Timer.publish(every: 0.09, on: .main, in: .common).autoconnect()
             .sink { [weak self] _ in self?.flushPending() }
 
-        // Route by mode: Saving → cheap direct provider; Deep → Hermes gateway.
+        // Routing is TWO independent axes:
+        //   • Destination (Local ↔ Server) — decided ONLY by the link toggle.
+        //   • Mode (Saving 🍃 ↔ Deep 🧠) — decides model + thinking depth only.
+        // Saving keeps the same philosophy everywhere: stateless, no session,
+        // no heavy agent context — cheap quick answers.
         let s = Settings.shared
-        let host = savingMode ? s.directHost : hostForTurn
+        let onServer = s.useServer && !s.serverHost.isEmpty
         // Saving: use the vision model when the turn has an image, else the fast text model.
         let savingM = (turnHasImages && !s.savingVisionModel.isEmpty) ? s.savingVisionModel : s.savingModel
-        let model = savingMode ? savingM : (s.deepModel.isEmpty ? "hermes-agent" : s.deepModel)
-        let key: String? = savingMode ? s.resolvedDirectKey() : nil
+        let host: String
+        let model: String
+        let key: String?
+        if onServer {
+            host = s.serverHost
+            model = savingMode
+                ? (s.serverSavingModel.isEmpty ? "hermes-agent" : s.serverSavingModel)
+                : (s.serverDeepModel.isEmpty ? "hermes-agent" : s.serverDeepModel)
+            key = s.serverKey
+        } else {
+            host = savingMode ? s.directHost : hostForTurn
+            model = savingMode ? savingM : (s.deepModel.isEmpty ? "hermes-agent" : s.deepModel)
+            key = savingMode ? s.resolvedDirectKey() : nil
+        }
         let sid: String? = (!savingMode && serverManaged) ? sessionId : nil
         // Web plugin is an OpenRouter feature; used only when there's no Tavily key
         // (with a Tavily key we already injected results above, for any provider).
@@ -1189,6 +1235,7 @@ struct AskView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .overlay(alignment: .topTrailing) { serverBadge }
         .overlay(dropHighlight)
         .overlay { if showKanban { kanbanOverlay } }
         .overlay { if showSchedule { scheduleOverlay } }
@@ -1197,6 +1244,32 @@ struct AskView: View {
         .environment(\.layoutDirection, ar ? .rightToLeft : .leftToRight)
         .onExitCommand { vm.onClose?() }
         .onDrop(of: [UTType.fileURL], isTargeted: $dropTargeted) { providers in handleDrop(providers) }
+    }
+
+    // Destination badge — visible ONLY when messages route to the server, so the
+    // default (local) stays clutter-free. A tiny glass capsule with a live dot;
+    // tapping it flips back to local (same action as the 🔗 icon).
+    @ViewBuilder private var serverBadge: some View {
+        if Settings.shared.useServer && !Settings.shared.serverHost.isEmpty {
+            Button(action: { toggleServer() }) {
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(t.accent)
+                        .frame(width: 6, height: 6)
+                        .shadow(color: t.accent.opacity(0.8), radius: 3)
+                    Text(ar ? "سيرفر" : "Server")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(t.textPrimary.opacity(0.85))
+                }
+                .padding(.horizontal, 8).padding(.vertical, 4)
+                .background(Capsule().fill(t.surface.opacity(0.85)))
+                .overlay(Capsule().strokeBorder(t.accent.opacity(0.35), lineWidth: 1))
+            }
+            .buttonStyle(SpringPopButtonStyle())
+            .help(ar ? "رسائلك تروح للسيرفر — اضغط للتبديل للمحلي" : "Messages go to the server — tap to switch to local")
+            .padding(10)
+            .transition(.opacity.combined(with: .scale(scale: 0.9)))
+        }
     }
 
     // Appearance override: nil = follow the system (macOS light/dark).
@@ -1710,9 +1783,21 @@ struct AskView: View {
             iconButton("checklist", active: showKanban, help: ar ? "لوحة Kanban (بطاقات)" : "Kanban board (cards)") { showKanban.toggle() }
         case "schedule":
             iconButton("calendar.badge.clock", active: showSchedule, help: ar ? "جدولة تذكير" : "Schedule a reminder") { showSchedule.toggle() }
+        case "server":
+            iconButton(Settings.shared.useServer ? "link.circle.fill" : "link",
+                       active: Settings.shared.useServer,
+                       help: Settings.shared.useServer ? (ar ? "الوجهة: السيرفر 🖥️ — اضغط للتبديل للمحلي" : "Destination: Server — tap for Local")
+                                                       : (ar ? "الوجهة: محلي 💻 — اضغط للتبديل للسيرفر" : "Destination: Local — tap for Server")) {
+                toggleServer()
+            }
         default:
             EmptyView()
         }
+    }
+
+    private func toggleServer() {
+        Settings.shared.useServer.toggle()
+        Settings.shared.save()   // posts didChange → panel refreshes the icon state
     }
 
     // Perform an icon's action from the "⋯ More" menu.
@@ -1730,6 +1815,7 @@ struct AskView: View {
         case "desktop": openHermesDesktop()
         case "tasks":   showKanban.toggle()
         case "schedule": showSchedule.toggle()
+        case "server":  toggleServer()
         default: break
         }
     }
@@ -2345,9 +2431,9 @@ struct AskView: View {
                 Text(lang.isEmpty ? "code" : lang)
                     .font(.system(size: 10, weight: .medium, design: .monospaced)).foregroundColor(t.textSecondary)
                 Spacer()
-                Button { copyToPasteboard(code) } label: {
-                    Image(systemName: "doc.on.doc").font(.system(size: 11)).foregroundColor(t.textSecondary)
-                }.buttonStyle(.plain).help(ar ? "نسخ الكود" : "Copy code")
+                CodeCopyButton(code: code, idleColor: t.textSecondary,
+                               helpCopy: ar ? "نسخ الكود" : "Copy code",
+                               helpDone: ar ? "تم النسخ ✓" : "Copied ✓")
             }
             .padding(.horizontal, 10).padding(.top, 6)
             ScrollView(.horizontal, showsIndicators: false) {
@@ -2368,9 +2454,9 @@ struct AskView: View {
                 Text(configuration.language?.isEmpty == false ? configuration.language! : "code")
                     .font(.system(size: 10, weight: .medium, design: .monospaced)).foregroundColor(t.textSecondary)
                 Spacer()
-                Button(action: { copyToPasteboard(configuration.content) }) {
-                    Image(systemName: "doc.on.doc").font(.system(size: 11)).foregroundColor(t.textSecondary)
-                }.buttonStyle(.plain).help(ar ? "نسخ الكود" : "Copy code")
+                CodeCopyButton(code: configuration.content, idleColor: t.textSecondary,
+                               helpCopy: ar ? "نسخ الكود" : "Copy code",
+                               helpDone: ar ? "تم النسخ ✓" : "Copied ✓")
             }
             .padding(.horizontal, 10).padding(.top, 6)
 
@@ -2414,13 +2500,22 @@ struct AskView: View {
         // session via the deep link (Desktop loads the full history automatically).
         let hasHermesSession = Settings.shared.serverManagedSessions && vm.sessionEstablished && !vm.savingMode
         if hasHermesSession {
+            // Safety net FIRST: even if Desktop accepts the deep link but fails to
+            // load the session (version drift), the full transcript is already on
+            // the clipboard — one ⌘V and you continue anyway.
+            let transcript = vm.transcriptForHandoff()
+            if !transcript.isEmpty {
+                let pb = NSPasteboard.general
+                pb.clearContents()
+                pb.setString(transcript, forType: .string)
+            }
             let link = "hermes://session/\(vm.sessionId)"
             if open([link]) == 0 {
                 let title = vm.sessionTitle
                 Notifier.notify(
                     title: ar ? "فتح المحادثة في هيرميس ديسكتوب" : "Opening in Hermes Desktop",
-                    body: title.isEmpty ? (ar ? "نفس الجلسة" : "The same session")
-                                         : (ar ? "الجلسة: \(title)" : "Session: \(title)")
+                    body: ar ? "إذا ما ظهرت الجلسة\(title.isEmpty ? "" : " «\(title)»")، المحادثة منسوخة — الصقها (⌘V)."
+                             : "If the session\(title.isEmpty ? "" : " “\(title)”") doesn't appear, the chat is copied — paste (⌘V)."
                 )
                 vm.onClose?()
                 return

@@ -249,7 +249,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func togglePanel() {
         let visible = windows.filter { $0.isVisible }
         if !visible.isEmpty {
-            visible.forEach { $0.dismiss() }
+            // Focused window (text cursor / key focus) → hide ONLY that one, the
+            // rest stay put. No focused window (app in background) → hide them all.
+            if let focused = visible.first(where: { $0.isKey }) {
+                focused.dismiss()
+            } else {
+                visible.forEach { $0.dismiss() }
+            }
         } else {
             windows.forEach { $0.present() }
         }
