@@ -82,6 +82,7 @@ struct PanelIcon: Identifiable {
         PanelIcon(id: "tasks",   symbol: "checklist", labelAr: "مهمة (Kanban)", labelEn: "Task (Kanban)"),
         PanelIcon(id: "schedule", symbol: "calendar.badge.clock", labelAr: "جدولة", labelEn: "Schedule"),
         PanelIcon(id: "server",  symbol: "link", labelAr: "محلي/سيرفر", labelEn: "Local/Server"),
+        PanelIcon(id: "sessions", symbol: "rectangle.stack", labelAr: "جلساتي", labelEn: "My sessions"),
     ]
 }
 
@@ -566,6 +567,7 @@ final class AskViewModel: ObservableObject {
     @Published var isLoading: Bool = false
     @Published var queued: String?   // text typed while a turn is running; auto-sent on finish
     @Published var suggestions: [String] = []   // AI-generated follow-up questions (AI Chat layout)
+    @Published var adoptedTitle: String?         // when continuing an existing gateway session
     @Published var streamingMessageId: UUID?   // the message currently being streamed (rendered as plain text)
     @Published var elapsed: TimeInterval = 0
     @Published var pinMode: PinMode = PinMode(rawValue: UserDefaults.standard.string(forKey: "hb.pinmode") ?? "off") ?? .off
@@ -761,10 +763,33 @@ final class AskViewModel: ObservableObject {
         errorText = ""
         elapsed = 0
         noteFilename = nil
+        suggestions = []
+        adoptedTitle = nil
         sessionId = AskViewModel.newSessionId()
         sessionEstablished = false
         titleApplied = false
         includeSystemForTurn = true
+    }
+
+    // Adopt an existing gateway session (created in Desktop or elsewhere) WITHOUT
+    // loading its messages — the server holds the history and injects it. The panel
+    // stays light: empty message area, but every new turn continues that session.
+    func adoptSession(_ session: HermesSession) {
+        stop()
+        archiveToObsidian()
+        messages = []
+        input = ""
+        errorText = ""
+        suggestions = []
+        elapsed = 0
+        noteFilename = nil
+        savingMode = false                 // server sessions require Deep mode
+        UserDefaults.standard.set(false, forKey: "hb.saving")
+        sessionId = session.id
+        sessionEstablished = true          // it's an existing session
+        titleApplied = true                // already titled on the server
+        includeSystemForTurn = false       // server has the full context
+        adoptedTitle = session.title
     }
 
     var lastAssistantText: String { messages.last(where: { $0.role == "assistant" })?.text ?? "" }
@@ -1218,6 +1243,9 @@ struct AskView: View {
     @State private var kanbanInput = ""
     @ObservedObject private var kanban = KanbanStore.shared
     @State private var showSchedule = false
+    @State private var showSessions = false
+    @State private var sessionList: [HermesSession] = []
+    @State private var sessionsLoading = false
     @State private var scheduleDate = Date()
     @State private var scheduleText = ""
 
@@ -1239,6 +1267,7 @@ struct AskView: View {
         .overlay(dropHighlight)
         .overlay { if showKanban { kanbanOverlay } }
         .overlay { if showSchedule { scheduleOverlay } }
+        .overlay { if showSessions { sessionsOverlay } }
         .animation(.easeInOut(duration: 0.6), value: vm.isLoading)   // gradual light fade
         .preferredColorScheme(colorSchemeForMode)
         .environment(\.layoutDirection, ar ? .rightToLeft : .leftToRight)
@@ -1712,6 +1741,7 @@ struct AskView: View {
 
     private var inputField: some View {
         VStack(alignment: .leading, spacing: 4) {
+            if let title = vm.adoptedTitle { adoptedBanner(title) }
             if let q = vm.queued, !q.isEmpty { queuedBanner(q) }
             HStack(alignment: .top, spacing: 8) {
                 Image(systemName: "sparkles").foregroundColor(t.accent).font(.system(size: 16, weight: .semibold)).padding(.top, 3)
@@ -1740,6 +1770,22 @@ struct AskView: View {
         .foregroundColor(t.textSecondary)
         .padding(.horizontal, 8).padding(.vertical, 4)
         .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(t.accent.opacity(0.14)))
+    }
+
+    // Shows which existing session you're continuing (empty panel, server holds context).
+    private func adoptedBanner(_ title: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "arrow.uturn.backward.circle").font(.system(size: 11)).foregroundColor(t.accent)
+            Text((ar ? "متابعة: " : "Continuing: ") + String(title.prefix(50)))
+                .font(.system(size: 11)).foregroundColor(t.textPrimary).lineLimit(1)
+            Spacer()
+            Button { vm.newChat() } label: {
+                Image(systemName: "xmark.circle.fill").font(.system(size: 11)).foregroundColor(t.textSecondary)
+            }.buttonStyle(.plain).help(ar ? "إنهاء المتابعة" : "Stop continuing")
+        }
+        .padding(.horizontal, 8).padding(.vertical, 4)
+        .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(t.accent.opacity(0.18)))
+        .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(t.accent.opacity(0.35), lineWidth: 1))
     }
 
     private func iconHidden(_ id: String) -> Bool { Settings.shared.isIconHidden(id) }
@@ -1790,8 +1836,27 @@ struct AskView: View {
                                                        : (ar ? "الوجهة: محلي 💻 — اضغط للتبديل للسيرفر" : "Destination: Local — tap for Server")) {
                 toggleServer()
             }
+        case "sessions":
+            iconButton("rectangle.stack", active: showSessions, help: ar ? "جلساتي (متابعة محادثة)" : "My sessions (resume a chat)") { openSessions() }
         default:
             EmptyView()
+        }
+    }
+
+    private func openSessions() {
+        showSessions = true
+        loadSessions()
+    }
+
+    private func loadSessions() {
+        sessionsLoading = true
+        sessionList = []
+        let s = Settings.shared
+        let host = s.deepHost()
+        let key = (s.useServer && !s.serverHost.isEmpty) ? s.serverKey : s.resolvedAPIKey()
+        HermesClient.shared.listSessions(host: host, apiKey: key) { list in
+            sessionList = list
+            sessionsLoading = false
         }
     }
 
@@ -1816,6 +1881,7 @@ struct AskView: View {
         case "tasks":   showKanban.toggle()
         case "schedule": showSchedule.toggle()
         case "server":  toggleServer()
+        case "sessions": openSessions()
         default: break
         }
     }
@@ -2004,6 +2070,58 @@ struct AskView: View {
     }
 
     // MARK: - Kanban overlay (local, real cards)
+
+    // MARK: - Sessions overlay (reverse link: resume a Desktop/gateway conversation)
+
+    private var sessionsOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.35).onTapGesture { showSessions = false }
+            VStack(spacing: 12) {
+                HStack(spacing: 8) {
+                    Image(systemName: "rectangle.stack").foregroundColor(t.accent)
+                    Text(ar ? "جلساتي" : "My sessions").font(.system(size: 15, weight: .bold)).foregroundColor(t.textPrimary)
+                    Spacer()
+                    Button { loadSessions() } label: { Image(systemName: "arrow.clockwise").foregroundColor(t.textSecondary) }.buttonStyle(.plain)
+                    Button { showSessions = false } label: { Image(systemName: "xmark.circle.fill").foregroundColor(t.textSecondary) }.buttonStyle(.plain)
+                }
+                Text(Settings.shared.useServer ? (ar ? "من السيرفر — تشمل محادثات ديسكتوب. تفتحها فاضية وتكمّلها بالسياق."
+                                                      : "From the server — includes Desktop chats. Opens light, continues with context.")
+                                               : (ar ? "من المحلي. فعّل «السيرفر» عشان تشوف محادثات ديسكتوب المتصل بالسيرفر."
+                                                      : "From local. Switch to Server to see Desktop's server chats."))
+                    .font(.system(size: 11)).foregroundColor(t.textSecondary)
+                if sessionsLoading {
+                    ProgressView().frame(maxWidth: .infinity).padding(.vertical, 24)
+                } else if sessionList.isEmpty {
+                    Text(ar ? "ما فيه جلسات — أو الوجهة غير موصولة." : "No sessions — or the endpoint isn't reachable.")
+                        .font(.system(size: 12)).foregroundColor(t.textSecondary).padding(.vertical, 24)
+                } else {
+                    ScrollView(showsIndicators: false) {
+                        VStack(spacing: 6) {
+                            ForEach(sessionList) { sess in
+                                Button { vm.adoptSession(sess); showSessions = false } label: {
+                                    HStack(spacing: 10) {
+                                        Image(systemName: "bubble.left.and.text.bubble.right").font(.system(size: 13)).foregroundColor(t.accent)
+                                        Text(sess.title.isEmpty ? sess.id : sess.title)
+                                            .font(.system(size: 13)).foregroundColor(t.textPrimary).lineLimit(1)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                        Image(systemName: "arrow.up.right").font(.system(size: 11)).foregroundColor(t.textSecondary)
+                                    }
+                                    .padding(11)
+                                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(t.surface.opacity(0.5)))
+                                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(t.textSecondary.opacity(0.14), lineWidth: 1))
+                                }.buttonStyle(SpringPopButtonStyle())
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(16)
+            .frame(maxWidth: 520, maxHeight: 480)
+            .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(t.background))
+            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(t.textSecondary.opacity(0.2), lineWidth: 1))
+            .padding(24)
+        }
+    }
 
     private var kanbanOverlay: some View {
         ZStack {
@@ -2498,44 +2616,21 @@ struct AskView: View {
 
         // Deep mode with a real, server-managed Hermes session → open that exact
         // session via the deep link (Desktop loads the full history automatically).
-        let hasHermesSession = Settings.shared.serverManagedSessions && vm.sessionEstablished && !vm.savingMode
-        if hasHermesSession {
-            // Safety net FIRST: even if Desktop accepts the deep link but fails to
-            // load the session (version drift), the full transcript is already on
-            // the clipboard — one ⌘V and you continue anyway.
-            let transcript = vm.transcriptForHandoff()
-            if !transcript.isEmpty {
-                let pb = NSPasteboard.general
-                pb.clearContents()
-                pb.setString(transcript, forType: .string)
-            }
-            let link = "hermes://session/\(vm.sessionId)"
-            if open([link]) == 0 {
-                let title = vm.sessionTitle
-                Notifier.notify(
-                    title: ar ? "فتح المحادثة في هيرميس ديسكتوب" : "Opening in Hermes Desktop",
-                    body: ar ? "إذا ما ظهرت الجلسة\(title.isEmpty ? "" : " «\(title)»")، المحادثة منسوخة — الصقها (⌘V)."
-                             : "If the session\(title.isEmpty ? "" : " “\(title)”") doesn't appear, the chat is copied — paste (⌘V)."
-                )
-                vm.onClose?()
-                return
-            }
-            // Scheme not handled (older Desktop) → fall through to transcript handoff.
+        // Real, server-managed Hermes session (Deep mode) → open that exact session.
+        // Desktop is on the same gateway, so it loads the full history — no paste.
+        if Settings.shared.serverManagedSessions && vm.sessionEstablished && !vm.savingMode {
+            _ = open(["hermes://session/\(vm.sessionId)"])
+            let title = vm.sessionTitle
+            Notifier.notify(
+                title: ar ? "فُتحت في هيرميس ديسكتوب" : "Opened in Hermes Desktop",
+                body: title.isEmpty ? (ar ? "نفس الجلسة." : "The same session.")
+                                    : (ar ? "الجلسة: \(title)" : "Session: \(title)")
+            )
+            vm.onClose?()
+            return
         }
 
-        // Saving mode / no Hermes session → hand off the full transcript so you can
-        // continue it in Desktop: copy it to the clipboard, then open Hermes to paste.
-        let transcript = vm.transcriptForHandoff()
-        if !transcript.isEmpty {
-            let pb = NSPasteboard.general
-            pb.clearContents()
-            pb.setString(transcript, forType: .string)
-            Notifier.notify(
-                title: ar ? "المحادثة جاهزة للمتابعة" : "Conversation ready to continue",
-                body: ar ? "نُسخت المحادثة — الصقها (⌘V) في هيرميس وأكمل من حيث وقفت."
-                         : "Copied — paste (⌘V) into Hermes to continue where you left off."
-            )
-        }
+        // Saving mode (not a Hermes session) → just launch Desktop.
         _ = open(["-a", "Hermes"])
         vm.onClose?()
     }

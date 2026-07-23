@@ -1,5 +1,12 @@
 import Foundation
 
+// A Hermes session as listed by GET /api/sessions (shared with Desktop).
+struct HermesSession: Identifiable, Equatable {
+    let id: String
+    let title: String
+    var updated: String = ""
+}
+
 // Talks to the local Hermes API server (`hermes gateway`) using the
 // OpenAI-compatible /v1/chat/completions endpoint. Sends the FULL conversation
 // each turn (so Hermes has context), streams the reply, and can be cancelled.
@@ -93,6 +100,37 @@ final class HermesClient {
                 ids = arr.compactMap { $0["id"] as? String }
             }
             DispatchQueue.main.async { completion(ids.sorted()) }
+        }.resume()
+    }
+
+    // List sessions from the active gateway (GET /api/sessions). These are shared
+    // with Hermes Desktop when both point at the same gateway, so the panel can
+    // adopt a Desktop conversation and continue it. Defensive about response shape.
+    func listSessions(host: String, apiKey: String, _ completion: @escaping ([HermesSession]) -> Void) {
+        guard let url = URL(string: "\(host)/api/sessions?limit=40") else {
+            DispatchQueue.main.async { completion([]) }; return
+        }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 12
+        if !apiKey.isEmpty { req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization") }
+        URLSession.shared.dataTask(with: req) { data, _, _ in
+            var out: [HermesSession] = []
+            if let data = data, let json = try? JSONSerialization.jsonObject(with: data) {
+                let arr: [[String: Any]]
+                if let a = json as? [[String: Any]] { arr = a }
+                else if let o = json as? [String: Any] {
+                    arr = (o["sessions"] as? [[String: Any]]) ?? (o["data"] as? [[String: Any]])
+                        ?? (o["items"] as? [[String: Any]]) ?? (o["results"] as? [[String: Any]]) ?? []
+                } else { arr = [] }
+                for s in arr {
+                    let id = (s["id"] as? String) ?? (s["session_id"] as? String) ?? (s["sessionId"] as? String) ?? ""
+                    guard !id.isEmpty else { continue }
+                    let title = (s["title"] as? String) ?? (s["name"] as? String) ?? id
+                    let updated = (s["updated_at"] as? String) ?? (s["updated"] as? String) ?? ""
+                    out.append(HermesSession(id: id, title: title, updated: updated))
+                }
+            }
+            DispatchQueue.main.async { completion(out) }
         }.resume()
     }
 
