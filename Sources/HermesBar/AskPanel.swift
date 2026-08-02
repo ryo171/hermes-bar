@@ -552,6 +552,14 @@ final class FloatingPanel: NSPanel {
         isReleasedWhenClosed = false   // ARC owns the panel; close() must not release it
         minSize = NSSize(width: 460, height: 260)
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        applyCaptureHiding()
+    }
+
+    // Hidden-from-capture: .none removes the window from every screen-capture path
+    // (system screenshot, screen recording, Zoom/Meet/Teams share) while staying
+    // visible to the user on the real display. Toggled by Settings.hideFromCapture.
+    func applyCaptureHiding() {
+        sharingType = Settings.shared.hideFromCapture ? .none : .readOnly
     }
 
     override var canBecomeKey: Bool { true }
@@ -870,7 +878,9 @@ final class AskViewModel: ObservableObject {
         messages.append(ChatMessage(role: "user", text: text))
         turnHasImages = !images.isEmpty
         // Saving mode is stateless (direct provider) → always send full history.
-        let serverMode = !savingMode && serverManaged && sessionEstablished
+        // Image turns are NEVER server-managed: the screenshot is local and goes to
+        // the local vision model, so send full history (not a lone session turn).
+        let serverMode = !savingMode && serverManaged && sessionEstablished && images.isEmpty
         var convo: [[String: Any]] = []
         if serverMode {
             convo = [userMessage(text: text, images: images, detail: detail)]
@@ -944,9 +954,9 @@ final class AskViewModel: ObservableObject {
         let onServer = s.useServer && !s.serverHost.isEmpty
         // Saving: use the vision model when the turn has an image, else the fast text model.
         let savingM = (turnHasImages && !s.savingVisionModel.isEmpty) ? s.savingVisionModel : s.savingModel
-        let host: String
-        let model: String
-        let key: String?
+        var host: String
+        var model: String
+        var key: String?
         if onServer {
             host = s.serverHost
             model = savingMode
@@ -958,7 +968,19 @@ final class AskViewModel: ObservableObject {
             model = savingMode ? savingM : (s.deepModel.isEmpty ? "hermes-agent" : s.deepModel)
             key = savingMode ? s.resolvedDirectKey() : nil
         }
-        let sid: String? = (!savingMode && serverManaged) ? sessionId : nil
+        var sid: String? = (!savingMode && serverManaged) ? sessionId : nil
+
+        // Screen vision is ALWAYS local + direct — regardless of Saving/Deep or
+        // Local/Server. The screenshot is captured on THIS Mac and the (remote)
+        // Hermes agent can't reliably see it, so we route image turns to the local
+        // vision model. This is why "see my screen" stays stable while the server
+        // switch is on. Stateless (no session id).
+        if turnHasImages {
+            host = s.directHost
+            model = s.savingVisionModel.isEmpty ? s.savingModel : s.savingVisionModel
+            key = s.resolvedDirectKey()
+            sid = nil
+        }
         // Web plugin is an OpenRouter feature; used only when there's no Tavily key
         // (with a Tavily key we already injected results above, for any provider).
         let useWebSearch = savingMode && webSearch && s.searchApiKey.isEmpty && host.lowercased().contains("openrouter")
@@ -966,7 +988,7 @@ final class AskViewModel: ObservableObject {
         currentTask = HermesClient.shared.askStream(
             host: host,
             conversation: lastConversation,
-            reasoningEffort: savingMode ? nil : effortForTurn,
+            reasoningEffort: (savingMode || turnHasImages) ? nil : effortForTurn,
             sessionId: sid,
             includeSystem: includeSystemForTurn,
             apiKey: key,
@@ -1153,6 +1175,7 @@ final class AskPanelController: NSObject, NSWindowDelegate {
         ensurePanel()
         applyPinBehavior()
         applyAppearance()
+        panel?.applyCaptureHiding()
         // Centre only the first time; afterwards the window reappears exactly where
         // the user left it (e.g. a screen corner), preserving position on Show.
         if !hasPositioned {
@@ -1192,7 +1215,7 @@ final class AskPanelController: NSObject, NSWindowDelegate {
         onClosed?()
     }
 
-    func applyTheme() { viewModel.refreshFromSettings(); applyAppearance() }
+    func applyTheme() { viewModel.refreshFromSettings(); applyAppearance(); panel?.applyCaptureHiding() }
 
     // Follow the user's appearance choice (system / dark / light) at the window level
     // so the glass material + native chrome flip too, not just SwiftUI content.
@@ -1814,7 +1837,7 @@ struct AskView: View {
         case "scrape":
             iconButton("doc.text.magnifyingglass", active: false, help: ar ? "قراءة/فحص سريع (Scrapling)" : "Quick read") { vm.applySpiderPrefix() }
         case "screen":
-            iconButton(vm.withScreenshot ? "eye.fill" : "eye.slash", active: vm.withScreenshot, help: ar ? "رؤية الشاشة" : "See screen") { vm.setWithScreenshot(!vm.withScreenshot) }
+            iconButton(vm.withScreenshot ? "eye.fill" : "eye.slash", active: vm.withScreenshot, help: ar ? "شارك شاشتي (لقطة نظيفة، تحليل محلي)" : "Share my screen (clean shot, local vision)") { vm.setWithScreenshot(!vm.withScreenshot) }
         case "pin":
             iconButton(pinIcon, active: vm.pinMode != .off, help: pinHelp) { vm.cyclePinMode() }
         case "notify":

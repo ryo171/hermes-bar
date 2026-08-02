@@ -71,6 +71,11 @@ final class Settings: Codable {
     var host: String = "http://localhost:8642"
     var apiKey: String = ""     // empty → resolved from ~/.hermes/.env at request time
     var captureFullScreen: Bool = true
+    // When on, the panel window is set to NSWindow.SharingType.none — invisible to
+    // screenshots, screen recordings, and screen-sharing (Zoom/Meet/Teams). Only you
+    // see it on the physical display. Keeps the panel out of your captures AND out of
+    // the screenshot it sends to Hermes. Default on.
+    var hideFromCapture: Bool = true
 
     // Remote (server) Hermes API-Server endpoint for Deep mode. When useServer is on,
     // Deep mode talks to the server instead of the local gateway. One-tap switch.
@@ -125,7 +130,7 @@ final class Settings: Codable {
         case language, themeName, hotKey, newWindowHotKey, closeHotKey, layoutName, iconStyle, thinkingStyle, serverManagedSessions
         case thinkingSpeed, thinkingIntensity, appearanceMode, showSuggestions
         case directHost, savingModel, savingVisionModel, deepModel, directKey, searchApiKey
-        case host, apiKey, captureFullScreen, hiddenIcons, customThemes, cachedModels
+        case host, apiKey, captureFullScreen, hideFromCapture, hiddenIcons, customThemes, cachedModels
         case savedTemplates, removedTemplates, serverHost, serverKey, useServer
         case serverSavingModel, serverDeepModel
     }
@@ -160,6 +165,7 @@ final class Settings: Codable {
         host = try c.decodeIfPresent(String.self, forKey: .host) ?? "http://localhost:8642"
         apiKey = try c.decodeIfPresent(String.self, forKey: .apiKey) ?? ""
         captureFullScreen = try c.decodeIfPresent(Bool.self, forKey: .captureFullScreen) ?? true
+        hideFromCapture = try c.decodeIfPresent(Bool.self, forKey: .hideFromCapture) ?? true
         hiddenIcons = try c.decodeIfPresent([String].self, forKey: .hiddenIcons) ?? []
         customThemes = try c.decodeIfPresent([CustomThemeData].self, forKey: .customThemes) ?? []
         cachedModels = try c.decodeIfPresent([String].self, forKey: .cachedModels) ?? []

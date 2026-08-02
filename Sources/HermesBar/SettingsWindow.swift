@@ -69,6 +69,7 @@ final class SettingsModel: ObservableObject {
     @Published var directHost: String { didSet { commit() } }
     @Published var savingModel: String { didSet { commit() } }
     @Published var savingVisionModel: String { didSet { commit() } }
+    @Published var hideFromCapture: Bool { didSet { commit() } }
     @Published var deepModel: String { didSet { commit() } }
     @Published var directKey: String { didSet { commit() } }
     @Published var searchApiKey: String { didSet { commit() } }
@@ -101,6 +102,7 @@ final class SettingsModel: ObservableObject {
         directHost = s.directHost
         savingModel = s.savingModel
         savingVisionModel = s.savingVisionModel
+        hideFromCapture = s.hideFromCapture
         deepModel = s.deepModel
         directKey = s.directKey
         searchApiKey = s.searchApiKey
@@ -134,6 +136,7 @@ final class SettingsModel: ObservableObject {
         s.directHost = directHost
         s.savingModel = savingModel
         s.savingVisionModel = savingVisionModel
+        s.hideFromCapture = hideFromCapture
         s.deepModel = deepModel
         s.directKey = directKey
         s.searchApiKey = searchApiKey
@@ -362,6 +365,11 @@ struct SettingsView: View {
                     row(ar ? "موديل التوفير (نصّي)" : "Saving model (text)") { modelField($model.savingModel, placeholder: "deepseek-v4-flash") }
                     row(ar ? "موديل الرؤية" : "Vision model") {
                         modelField($model.savingVisionModel, placeholder: ar ? "فاضي = نفس النصّي" : "empty = same as text")
+                    }
+                    row(ar ? "إخفاء اللوحة من التصوير" : "Hide panel from capture") {
+                        Toggle("", isOn: $model.hideFromCapture).labelsHidden().toggleStyle(.switch)
+                            .help(ar ? "تختفي نافذة اللوحة من لقطات الشاشة والتسجيل ومشاركة الشاشة — تشوفها إنت فقط. تبقى اللقطة اللي ترسلها لهيرميس نظيفة بدون اللوحة."
+                                     : "The panel vanishes from screenshots, recording, and screen-share — only you see it. Keeps the shot sent to Hermes clean of the panel.")
                     }
                     row(ar ? "موديل العميق" : "Deep model") {
                         TextField(ar ? "فاضي = افتراضي هيرميس" : "empty = Hermes default", text: $model.deepModel).textFieldStyle(.roundedBorder).frame(width: 220)
