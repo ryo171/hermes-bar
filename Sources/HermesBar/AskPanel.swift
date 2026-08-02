@@ -970,15 +970,23 @@ final class AskViewModel: ObservableObject {
         }
         var sid: String? = (!savingMode && serverManaged) ? sessionId : nil
 
-        // Screen vision is ALWAYS local + direct — regardless of Saving/Deep or
-        // Local/Server. The screenshot is captured on THIS Mac and the (remote)
-        // Hermes agent can't reliably see it, so we route image turns to the local
-        // vision model. This is why "see my screen" stays stable while the server
-        // switch is on. Stateless (no session id).
+        // Screen vision NEVER goes to the remote server — the screenshot is on THIS
+        // Mac and the remote agent can't see it. Force image turns onto the LOCAL
+        // destination, keeping each mode's normal local routing:
+        //   • Deep  → local Hermes gateway (hermes-agent) — the setup that already
+        //             worked well for you; key comes from ~/.hermes/.env.
+        //   • Saving → local direct vision model (savingVisionModel → savingModel).
+        // Stateless (no session id) so it works regardless of session state.
         if turnHasImages {
-            host = s.directHost
-            model = s.savingVisionModel.isEmpty ? s.savingModel : s.savingVisionModel
-            key = s.resolvedDirectKey()
+            if savingMode {
+                host = s.directHost
+                model = s.savingVisionModel.isEmpty ? s.savingModel : s.savingVisionModel
+                key = s.resolvedDirectKey()
+            } else {
+                host = s.host   // local gateway
+                model = s.deepModel.isEmpty ? "hermes-agent" : s.deepModel
+                key = nil       // resolved from ~/.hermes/.env
+            }
             sid = nil
         }
         // Web plugin is an OpenRouter feature; used only when there's no Tavily key
