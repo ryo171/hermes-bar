@@ -83,6 +83,7 @@ struct PanelIcon: Identifiable {
         PanelIcon(id: "schedule", symbol: "calendar.badge.clock", labelAr: "جدولة", labelEn: "Schedule"),
         PanelIcon(id: "server",  symbol: "link", labelAr: "محلي/سيرفر", labelEn: "Local/Server"),
         PanelIcon(id: "sessions", symbol: "rectangle.stack", labelAr: "جلساتي", labelEn: "My sessions"),
+        PanelIcon(id: "stealth", symbol: "rectangle.slash", labelAr: "وضع خفي", labelEn: "Stealth"),
     ]
 }
 
@@ -1592,6 +1593,7 @@ struct AskView: View {
         case "screen": return vm.withScreenshot
         case "pin":    return vm.pinMode != .off
         case "notify": return vm.notifyWhenDone
+        case "stealth": return Settings.shared.hideFromCapture
         default:       return false
         }
     }
@@ -1869,9 +1871,21 @@ struct AskView: View {
             }
         case "sessions":
             iconButton("rectangle.stack", active: showSessions, help: ar ? "جلساتي (متابعة محادثة)" : "My sessions (resume a chat)") { openSessions() }
+        case "stealth":
+            iconButton(Settings.shared.hideFromCapture ? "rectangle.slash.fill" : "rectangle.slash",
+                       active: Settings.shared.hideFromCapture,
+                       help: Settings.shared.hideFromCapture ? (ar ? "خفي: اللوحة غير ظاهرة في التصوير — اضغط لإظهارها" : "Stealth on: panel hidden from capture — tap to show")
+                                                             : (ar ? "مرئي: اللوحة تظهر في التصوير — اضغط لإخفائها" : "Visible: panel shows in capture — tap to hide")) {
+                toggleStealth()
+            }
         default:
             EmptyView()
         }
+    }
+
+    private func toggleStealth() {
+        Settings.shared.hideFromCapture.toggle()
+        Settings.shared.save()   // posts didChange → windows re-apply sharingType + icon refreshes
     }
 
     private func openSessions() {
@@ -1913,6 +1927,7 @@ struct AskView: View {
         case "schedule": showSchedule.toggle()
         case "server":  toggleServer()
         case "sessions": openSessions()
+        case "stealth": toggleStealth()
         default: break
         }
     }
